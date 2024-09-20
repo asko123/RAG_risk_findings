@@ -228,18 +228,15 @@ def create_reranker(llm):
 def get_conversation_chain(vectorstore, llm, reranker):
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
-    prompt_template = """You are an AI assistant specializing in cybersecurity with a focus on access control and remediation strategies. Use the following pieces of context to answer the question at the end. If you don't know the answer, just say that you don't know—don't try to make up an answer.
-
-    Context:
-    {context}
+    prompt_template = """You are an AI assistant specializing in cybersecurity with a focus on access control and remediation strategies. If you don't know the answer, just say that you don't know—don't try to make up an answer.
 
     Question: {question}
 
     Provide a detailed answer, including:
-    1. Relevant access control measures identified in the context
+    1. Relevant access control measures
     2. An assessment of the effectiveness of these access control measures
-    3. Specific vulnerabilities or gaps in the access control framework
-    4. Detailed remediation strategies for identified issues
+    3. Potential vulnerabilities or gaps in the access control framework
+    4. Detailed remediation strategies for potential issues
     5. How the identified access control measures and remediation strategies align with industry standards (e.g., NIST SP 800-53, OWASP Top 10)
     6. Best practices for implementing and maintaining strong access control
     7. Any additional recommendations for improving overall access control posture
@@ -247,7 +244,7 @@ def get_conversation_chain(vectorstore, llm, reranker):
     Detailed answer:"""
 
     PROMPT = PromptTemplate(
-        template=prompt_template, input_variables=["context", "question"]
+        template=prompt_template, input_variables=["question"]
     )
 
     compression_retriever = ContextualCompressionRetriever(
