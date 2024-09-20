@@ -17,6 +17,7 @@ import os
 from docx import Document
 import PyPDF2
 import textract
+import re
 
 # Set display options
 pd.set_option('display.max_colwidth', None)
@@ -65,6 +66,19 @@ def load_files(file_paths):
             print(f"Error processing {file_path}: {e}")
     return text_data
 
+def extract_controls(text):
+    """Extract control-related information from text."""
+    control_patterns = [
+        r'control\s*:\s*([^.!?\n]+)',
+        r'mitigation\s*:\s*([^.!?\n]+)',
+        r'safeguard\s*:\s*([^.!?\n]+)',
+        r'security measure\s*:\s*([^.!?\n]+)',
+    ]
+    controls = []
+    for pattern in control_patterns:
+        controls.extend(re.findall(pattern, text, re.IGNORECASE))
+    return controls
+
 # Split text function
 def split_text(text_data):
     text_splitter = RecursiveCharacterTextSplitter(
@@ -73,6 +87,11 @@ def split_text(text_data):
         length_function=len
     )
     chunks = text_splitter.create_documents(text_data)
+    
+    # Extract and add control information to chunk metadata
+    for chunk in chunks:
+        chunk.metadata['controls'] = extract_controls(chunk.page_content)
+    
     return chunks
 
 # Create vector store function
@@ -112,9 +131,19 @@ def create_reranker(llm):
 def get_conversation_chain(vectorstore, llm, reranker):
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
-    prompt_template = """You are an AI assistant specializing in encryption and cybersecurity risk findings. Use the following pieces of context to answer the question at the end. If you don't know the answer, just say that you don't know—don't try to make up an answer.
+    prompt_template = """You are an AI assistant specializing in encryption and cybersecurity risk findings, with a focus on control measures. Use the following pieces of context to answer the question at the end. If you don't know the answer, just say that you don't know—don't try to make up an answer.
+
+    Context:
     {context}
+
     Question: {question}
+
+    Provide a detailed answer, including:
+    1. Relevant control measures identified in the context
+    2. An assessment of the effectiveness of these controls
+    3. Recommendations for additional or improved controls if necessary
+    4. Any potential gaps in the control framework
+
     Detailed answer:"""
 
     PROMPT = PromptTemplate(
@@ -123,10 +152,14 @@ def get_conversation_chain(vectorstore, llm, reranker):
 
     compression_retriever = ContextualCompressionRetriever(
         base_compressor=reranker,
-        base_retriever=vectorstore.as_retriever()
+        base_retriever=vectorstore.as_retriever(search_kwargs={"k": 5})
     )
     conversation_chain = ConversationalRetrievalChain.from_llm(
-        llm=llm, retriever=compression_retriever, memory=memory, prompt=PROMPT
+        llm=llm, 
+        retriever=compression_retriever, 
+        memory=memory, 
+        prompt=PROMPT,
+        return_source_documents=True  # This will return the source documents for each answer
     )
     return conversation_chain
 
@@ -134,15 +167,39 @@ def get_conversation_chain(vectorstore, llm, reranker):
 def handle_userinput(user_question, conversation):
     response = conversation({'question': user_question})
     chat_history = response['chat_history']
+    source_documents = response['source_documents']
+    
     for i, message in enumerate(chat_history):
         if i % 2 == 0:
             print(f"User: {message.content}")
         else:
             print(f"Control Bot: {message.content}")
+            
+    print("\nSource Documents:")
+    for doc in source_documents:
+        print(f"- {doc.metadata.get('source', 'Unknown source')}")
+        if 'controls' in doc.metadata:
+            print("  Controls mentioned:")
+            for control in doc.metadata['controls']:
+                print(f"    - {control}")
+    print("\n")
+
+def analyze_control_coverage(vectorstore):
+    """Analyze the coverage of controls in the dataset."""
+    all_controls = []
+    for doc in vectorstore.docstore._dict.values():
+        all_controls.extend(doc.metadata.get('controls', []))
+    
+    control_counts = pd.Series(all_controls).value_counts()
+    print("Control Coverage Analysis:")
+    print(control_counts)
+    print("\nTotal unique controls:", len(control_counts))
+    print("Top 10 most mentioned controls:")
+    print(control_counts.head(10))
 
 # Main function
 def main():
-    print("Executing RAG system...")
+    print("Executing RAG system for Cybersecurity Control Analysis...")
     # Directory containing data files
     data_dir = 'data'
     # Supported file extensions
@@ -162,9 +219,12 @@ def main():
     reranker = create_reranker(llm)
     conversation = get_conversation_chain(vectorstore, llm, reranker)
 
+    # Analyze control coverage
+    analyze_control_coverage(vectorstore)
+
     print("RAG System Ready. Type 'exit' to quit.")
     while True:
-        user_question = input("Ask a question about cybersecurity risks (or type 'exit' to quit): ")
+        user_question = input("Ask a question about cybersecurity risks and controls (or type 'exit' to quit): ")
         if user_question.lower() == 'exit':
             break
         handle_userinput(user_question, conversation)
