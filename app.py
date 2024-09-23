@@ -194,7 +194,16 @@ def split_text(text_data):
         chunk.metadata['access_control_info'] = extract_access_control_info(chunk.page_content)
     
     return chunks
+'''
+RecursiveCharacterTextSplitter: This splitter recursively breaks down text into smaller chunks based on characters or specified delimiters. 
+It's useful for handling large documents by splitting them into manageable pieces while preserving context.
 
+SentenceTextSplitter: Splits text into individual sentences using punctuation and language-specific rules. 
+This is helpful when you want each chunk to represent a complete thought or idea.
+
+TokenTextSplitter: Divides text based on tokens, which can be words or subword units. 
+This is particularly useful when working with token-based models or when you need precise control over the number of tokens in each chunk.
+'''
 def create_vectorstore(chunks):
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     vectorstore = LangchainFAISS.from_documents(chunks, embeddings)
