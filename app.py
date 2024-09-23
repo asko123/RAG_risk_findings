@@ -14,7 +14,7 @@ from langchain import HuggingFacePipeline
 import torch
 import os
 from docx import Document
-import PyPDF2
+import pdfplumber
 import textract
 import re
 
@@ -36,16 +36,38 @@ ACCESS_CONTROL_PRINCIPLES = """
 10. Time-based Access Control: Access is granted or restricted based on time of day or day of the week.
 """
 
-OWASP_ACCESS_CONTROL = """
-A01:2021-Broken Access Control
-Common access control vulnerabilities:
-1. Violation of the principle of least privilege or deny by default
-2. Bypassing access control checks by modifying the URL or HTML page
-3. Permitting viewing or editing someone else's account by providing its unique identifier
-4. Accessing API with missing access controls for POST, PUT and DELETE
-5. Elevation of privilege through metadata manipulation (e.g., JWT)
-6. CORS misconfiguration allowing unauthorized API access
-7. Force browsing to authenticated pages as an unauthenticated user or to privileged pages as a standard user
+OWASP_TOP_10_2021 = """
+OWASP Top 10 2021:
+
+1. A01:2021-Broken Access Control
+   - Moves up from the fifth position; 94% of applications were tested for some form of broken access control.
+
+2. A02:2021-Cryptographic Failures
+   - Previously known as 'Sensitive Data Exposure,' which is more of a broad symptom rather than a root cause.
+
+3. A03:2021-Injection
+   - Drops to the third position. 94% of the applications were tested for some form of injection, and the 33 CWEs mapped into this category have the second-highest number of occurrences in applications.
+
+4. A04:2021-Insecure Design
+   - A new category for 2021, with a focus on risks related to design flaws.
+
+5. A05:2021-Security Misconfiguration
+   - Moves up from #6 in the previous edition; 90% of applications were tested for some form of misconfiguration.
+
+6. A06:2021-Vulnerable and Outdated Components
+   - Previously titled 'Using Components with Known Vulnerabilities' and is #2 in the Top 10 community survey, but also had enough data to make the Top 10 via data analysis.
+
+7. A07:2021-Identification and Authentication Failures
+   - Previously was 'Broken Authentication' and sliding down from the second position, and now includes CWEs that are more related to identification failures.
+
+8. A08:2021-Software and Data Integrity Failures
+   - A new category for 2021, focusing on making assumptions related to software updates, critical data, and CI/CD pipelines without verifying integrity.
+
+9. A09:2021-Security Logging and Monitoring Failures
+   - Previously 'Insufficient Logging & Monitoring,' this category is expanded to include more types of failures, is challenging to test for, and isn't well represented in the CVE/CVSS data.
+
+10. A10:2021-Server-Side Request Forgery
+    - A new addition to the Top 10 for 2021, this category represents the scenario where the security community members are telling us this is important, even though it's not illustrated in the data at this time.
 """
 
 NIST_ACCESS_CONTROL = """
@@ -134,10 +156,38 @@ def load_files(file_paths):
                     text_data.append(text)
             elif extension == '.pdf':
                 text = ''
-                with open(file_path, 'rb') as f:
-                    reader = PyPDF2.PdfReader(f)
-                    for page in reader.pages:
-                        text += page.extract_text()
+                tables = []
+                current_table = None
+                with pdfplumber.open(file_path) as pdf:
+                    for page in pdf.pages:
+                        # Extract text
+                        page_text = page.extract_text()
+                        if page_text:
+                            text += page_text + '\n'
+                        
+                        # Extract tables
+                        page_tables = page.extract_tables()
+                        for table in page_tables:
+                            if current_table is None:
+                                current_table = table
+                            else:
+                                # Check if this table is a continuation of the previous one
+                                if len(table) == len(current_table[0]):  # Same number of columns
+                                    current_table.extend(table[1:])  # Append rows, skipping header
+                                else:
+                                    # This is a new table, save the current one and start a new one
+                                    tables.append(current_table)
+                                    current_table = table
+                    
+                    # Add the last table if there is one
+                    if current_table:
+                        tables.append(current_table)
+                
+                # Process all extracted tables
+                for table in tables:
+                    table_text = '\n'.join([', '.join(filter(None, row)) for row in table if any(row)])
+                    text += f"\nTABLE:\n{table_text}\nEND TABLE\n"
+                
                 text_data.append(text)
             elif extension == '.docx':
                 doc = Document(file_path)
@@ -184,8 +234,8 @@ def extract_access_control_info(text):
 
 def split_text(text_data):
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200,
+        chunk_size=1024,
+        chunk_overlap=100,
         length_function=len
     )
     chunks = text_splitter.create_documents(text_data)
@@ -194,16 +244,7 @@ def split_text(text_data):
         chunk.metadata['access_control_info'] = extract_access_control_info(chunk.page_content)
     
     return chunks
-'''
-RecursiveCharacterTextSplitter: This splitter recursively breaks down text into smaller chunks based on characters or specified delimiters. 
-It's useful for handling large documents by splitting them into manageable pieces while preserving context.
 
-SentenceTextSplitter: Splits text into individual sentences using punctuation and language-specific rules. 
-This is helpful when you want each chunk to represent a complete thought or idea.
-
-TokenTextSplitter: Divides text based on tokens, which can be words or subword units. 
-This is particularly useful when working with token-based models or when you need precise control over the number of tokens in each chunk.
-'''
 def create_vectorstore(chunks):
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     vectorstore = LangchainFAISS.from_documents(chunks, embeddings)
@@ -306,7 +347,7 @@ def main():
     print("Executing RAG system for Access Control and Remediation Analysis...")
     
     # Add static data
-    text_data = [ACCESS_CONTROL_PRINCIPLES, OWASP_ACCESS_CONTROL, NIST_ACCESS_CONTROL, ACCESS_CONTROL_REMEDIATION]
+    text_data = [ACCESS_CONTROL_PRINCIPLES, OWASP_TOP_10_2021, NIST_ACCESS_CONTROL, ACCESS_CONTROL_REMEDIATION]
     
     # Directory containing data files
     data_dir = 'data'
