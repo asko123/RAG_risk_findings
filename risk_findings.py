@@ -16,7 +16,7 @@ import torch
 import os
 from docx import Document
 import pdfplumber
-import re
+import re    
 
 # Set display options
 pd.set_option('display.max_colwidth', None)
@@ -239,26 +239,31 @@ def create_vectorstore(chunks):
 def load_llm():
     model_id = "meta-llama/Llama-2-13b-chat-hf"
     tokenizer = AutoTokenizer.from_pretrained(model_id)
-
+    
     nf4_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_use_double_quant=True,
         bnb_4bit_compute_dtype=torch.bfloat16
     )
-
+    
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         torch_dtype=torch.float16,
         quantization_config=nf4_config,
         device_map="auto"
     )
-
+    
     pipe = pipeline("text-generation", model=model, tokenizer=tokenizer, temperature=0.1)
     llm = HuggingFacePipeline(pipeline=pipe)
     return llm
 
 def create_reranker(llm):
-    compressor = LLMChainExtractor.from_llm(llm)
+    extraction_prompt = PromptTemplate(
+        template="Extract key access control information from the following document:\n\n{document}\n\nKey Points:",
+        input_variables=["document"]
+    )
+    llm_chain = LLMChain(llm=llm, prompt=extraction_prompt)
+    compressor = LLMChainExtractor(llm_chain=llm_chain)
     return compressor
 
 def get_conversation_chain(vectorstore, llm, reranker):
@@ -290,10 +295,10 @@ def get_conversation_chain(vectorstore, llm, reranker):
         template=prompt_template, input_variables=["context", "question"]
     )
 
-    # Corrected parameter names
+    # Use base_retriever and base_compressor as per the expected parameters
     compression_retriever = ContextualCompressionRetriever(
-        retriever=vectorstore.as_retriever(search_kwargs={"k": 5}),
-        compressor=reranker
+        base_retriever=vectorstore.as_retriever(search_kwargs={"k": 5}),
+        base_compressor=reranker
     )
 
     # Create a question generator
@@ -305,6 +310,7 @@ def get_conversation_chain(vectorstore, llm, reranker):
     Follow-Up Input: {question}
 
     Standalone question:"""
+
     question_generator_prompt = PromptTemplate(
         template=question_generator_template, input_variables=["chat_history", "question"]
     )
@@ -322,7 +328,6 @@ def get_conversation_chain(vectorstore, llm, reranker):
     )
 
     return conversation_chain
-
 
 def handle_userinput(user_question, conversation):
     response = conversation({'question': user_question})
