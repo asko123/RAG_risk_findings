@@ -15,7 +15,6 @@ import torch
 import os
 from docx import Document
 import pdfplumber
-import textract
 import re
 
 # Set display options
@@ -138,6 +137,28 @@ Common Access Control Remediation Strategies:
     - Raise awareness about the importance of access control among all users.
 """
 
+AC3_ACCESS_ENFORCEMENT = """
+AC-3 Access Enforcement:
+
+Definition: The information system enforces approved authorizations for logical access to information and system resources in accordance with applicable access control policies.
+
+Key points:
+1. Implement access control policies (e.g., identity-based policies, role-based policies, attribute-based policies) and associated access enforcement mechanisms (e.g., access control lists, access control matrices, cryptography).
+2. Ensure that access enforcement occurs immediately before or as part of access to objects.
+3. Employ automated mechanisms to support the management of information system accounts.
+4. Enforce the principle of least privilege, allowing only authorized accesses for users which are necessary to accomplish assigned tasks.
+5. Implement separation of duties through assigned information system access authorizations.
+6. Enforce approved authorizations for controlling the flow of information within the system and between interconnected systems.
+7. Employ dual authorization for highly sensitive operations or access to critical resources.
+
+Common implementation strategies:
+- Use of access control lists (ACLs)
+- Role-based access control (RBAC)
+- Attribute-based access control (ABAC)
+- Mandatory access control (MAC)
+- Discretionary access control (DAC)
+"""
+
 def load_files(file_paths):
     text_data = []
     for file_path in file_paths:
@@ -194,9 +215,6 @@ def load_files(file_paths):
                 fullText = [para.text for para in doc.paragraphs]
                 text = '\n'.join(fullText)
                 text_data.append(text)
-            elif extension == '.doc':
-                text = textract.process(file_path).decode('utf-8')
-                text_data.append(text)
             else:
                 print(f"Unsupported file type: {file_path}")
         except Exception as e:
@@ -204,15 +222,16 @@ def load_files(file_paths):
     return text_data
 
 def extract_access_control_info(text):
-    """Extract access control-related information and remediation strategies from text."""
     access_control_patterns = [
         r'access control\s*:\s*([^.!?\n]+)',
         r'authentication\s*:\s*([^.!?\n]+)',
         r'authorization\s*:\s*([^.!?\n]+)',
-        r'principle of least privilege\s*:\s*([^.!?\n]+)',
+        r'least privilege\s*:\s*([^.!?\n]+)',
         r'separation of duties\s*:\s*([^.!?\n]+)',
         r'role-based access control\s*:\s*([^.!?\n]+)',
         r'RBAC\s*:\s*([^.!?\n]+)',
+        r'attribute-based access control\s*:\s*([^.!?\n]+)',
+        r'ABAC\s*:\s*([^.!?\n]+)',
         r'mandatory access control\s*:\s*([^.!?\n]+)',
         r'MAC\s*:\s*([^.!?\n]+)',
         r'discretionary access control\s*:\s*([^.!?\n]+)',
@@ -226,6 +245,11 @@ def extract_access_control_info(text):
         r'A01:2021\s*-\s*([^.!?\n]+)',  # For OWASP Broken Access Control
         r'remediation\s*:\s*([^.!?\n]+)',  # For remediation strategies
         r'mitigation\s*:\s*([^.!?\n]+)',  # Alternative term for remediation
+        r'AC-3\s*:\s*([^.!?\n]+)',  # Specific pattern for AC-3
+        r'Access Enforcement\s*:\s*([^.!?\n]+)',
+        r'logical access\s*:\s*([^.!?\n]+)',
+        r'access control policies\s*:\s*([^.!?\n]+)',
+        r'access enforcement mechanisms\s*:\s*([^.!?\n]+)',
     ]
     access_control_info = []
     for pattern in access_control_patterns:
@@ -278,18 +302,19 @@ def create_reranker(llm):
 def get_conversation_chain(vectorstore, llm, reranker):
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
-    prompt_template = """You are an AI assistant specializing in cybersecurity with a focus on access control and remediation strategies. If you don't know the answer, just say that you don't know—don't try to make up an answer.
+    prompt_template = """You are an AI assistant specializing in cybersecurity with a focus on access control and remediation strategies, particularly NIST SP 800-53 AC-3 Access Enforcement. If you don't know the answer, just say that you don't know—don't try to make up an answer.
 
     Question: {question}
 
     Provide a detailed answer, including:
-    1. Relevant access control measures
-    2. An assessment of the effectiveness of these access control measures
-    3. Potential vulnerabilities or gaps in the access control framework
-    4. Detailed remediation strategies for potential issues
-    5. How the identified access control measures and remediation strategies align with industry standards (e.g., NIST SP 800-53, OWASP Top 10)
-    6. Best practices for implementing and maintaining strong access control
-    7. Any additional recommendations for improving overall access control posture
+    1. Relevance to AC-3 Access Enforcement
+    2. Specific access control measures related to AC-3
+    3. An assessment of the effectiveness of these access enforcement measures
+    4. Potential vulnerabilities or gaps in the access enforcement framework
+    5. Detailed remediation strategies for potential issues in access enforcement
+    6. How the identified access enforcement measures and remediation strategies align with AC-3 and other related standards
+    7. Best practices for implementing and maintaining strong access enforcement
+    8. Any additional recommendations for improving overall access enforcement posture
 
     Detailed answer:"""
 
@@ -331,28 +356,38 @@ def handle_userinput(user_question, conversation):
     print("\n")
 
 def analyze_access_control_coverage(vectorstore):
-    """Analyze the coverage of access control measures and remediation strategies in the dataset."""
     all_access_control_info = []
+    ac3_related_info = []
     for doc in vectorstore.docstore._dict.values():
-        all_access_control_info.extend(doc.metadata.get('access_control_info', []))
+        info = doc.metadata.get('access_control_info', [])
+        all_access_control_info.extend(info)
+        ac3_related_info.extend([item for item in info if 'AC-3' in item or 'Access Enforcement' in item])
     
     access_control_counts = pd.Series(all_access_control_info).value_counts()
+    ac3_counts = pd.Series(ac3_related_info).value_counts()
+
     print("Access Control and Remediation Coverage Analysis:")
     print(access_control_counts)
     print("\nTotal unique access control measures and remediation strategies:", len(access_control_counts))
     print("Top 10 most mentioned access control measures and remediation strategies:")
     print(access_control_counts.head(10))
+    
+    print("\nAC-3 Access Enforcement Specific Analysis:")
+    print(ac3_counts)
+    print("\nTotal unique AC-3 related measures:", len(ac3_counts))
+    print("Top 5 most mentioned AC-3 related measures:")
+    print(ac3_counts.head(5))
 
 def main():
     print("Executing RAG system for Access Control and Remediation Analysis...")
     
     # Add static data
-    text_data = [ACCESS_CONTROL_PRINCIPLES, OWASP_TOP_10_2021, NIST_ACCESS_CONTROL, ACCESS_CONTROL_REMEDIATION]
+    text_data = [ACCESS_CONTROL_PRINCIPLES, OWASP_TOP_10_2021, NIST_ACCESS_CONTROL, ACCESS_CONTROL_REMEDIATION, AC3_ACCESS_ENFORCEMENT]
     
     # Directory containing data files
     data_dir = 'data'
     # Supported file extensions
-    supported_extensions = ['.csv', '.txt', '.pdf', '.docx', '.doc']
+    supported_extensions = ['.csv', '.txt', '.pdf', '.docx']
     # Get list of all files in data_dir with supported extensions
     file_paths = []
     for root, dirs, files in os.walk(data_dir):
