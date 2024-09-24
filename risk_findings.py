@@ -178,38 +178,9 @@ def load_files(file_paths):
                     text_data.append(text)
             elif extension == '.pdf':
                 text = ''
-                tables = []
-                current_table = None
                 with pdfplumber.open(file_path) as pdf:
                     for page in pdf.pages:
-                        # Extract text
-                        page_text = page.extract_text()
-                        if page_text:
-                            text += page_text + '\n'
-                        
-                        # Extract tables
-                        page_tables = page.extract_tables()
-                        for table in page_tables:
-                            if current_table is None:
-                                current_table = table
-                            else:
-                                # Check if this table is a continuation of the previous one
-                                if len(table) == len(current_table[0]):  # Same number of columns
-                                    current_table.extend(table[1:])  # Append rows, skipping header
-                                else:
-                                    # This is a new table, save the current one and start a new one
-                                    tables.append(current_table)
-                                    current_table = table
-                    
-                    # Add the last table if there is one
-                    if current_table:
-                        tables.append(current_table)
-                
-                # Process all extracted tables
-                for table in tables:
-                    table_text = '\n'.join([', '.join(filter(None, row)) for row in table if any(row)])
-                    text += f"\nTABLE:\n{table_text}\nEND TABLE\n"
-                
+                        text += page.extract_text() + '\n'
                 text_data.append(text)
             elif extension == '.docx':
                 doc = Document(file_path)
@@ -229,25 +200,29 @@ def extract_access_control_info(text):
         r'authorization\s*:\s*([^.!?\n]+)',
         r'least privilege\s*:\s*([^.!?\n]+)',
         r'separation of duties\s*:\s*([^.!?\n]+)',
+        r'need-to-know\s*:\s*([^.!?\n]+)',
+        r'role-based access\s*:\s*([^.!?\n]+)',
+        r'multi-factor authentication\s*:\s*([^.!?\n]+)',
         r'access enforcement\s*:\s*([^.!?\n]+)',
-        r'remediation\s*:\s*([^.!?\n]+)',  # For remediation strategies
-        r'mitigation\s*:\s*([^.!?\n]+)',  # Alternative term for remediation
         r'AC-3\s*:\s*([^.!?\n]+)',  # Specific pattern for AC-3
         r'Access Enforcement\s*:\s*([^.!?\n]+)',
         r'logical access\s*:\s*([^.!?\n]+)',
         r'access control policies\s*:\s*([^.!?\n]+)',
         r'access enforcement mechanisms\s*:\s*([^.!?\n]+)',
     ]
+    
     access_control_info = []
     for pattern in access_control_patterns:
-        access_control_info.extend(re.findall(pattern, text, re.IGNORECASE))
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        access_control_info.extend(matches)
+    
     return access_control_info
 
 def split_text(text_data):
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1024,
-        chunk_overlap=100,
-        length_function=len
+        chunk_size=1000,
+        chunk_overlap=200,
+        length_function=len,
     )
     chunks = text_splitter.create_documents(text_data)
     
@@ -315,18 +290,19 @@ def get_conversation_chain(vectorstore, llm, reranker):
         template=prompt_template, input_variables=["context", "question"]
     )
 
+    # Corrected parameter names
     compression_retriever = ContextualCompressionRetriever(
-        base_compressor=reranker,
-        base_retriever=vectorstore.as_retriever(search_kwargs={"k": 5})
+        retriever=vectorstore.as_retriever(search_kwargs={"k": 5}),
+        compressor=reranker
     )
 
     # Create a question generator
-    question_generator_template = """Given the following conversation and a follow up question, rephrase the follow up question to be a standalone question that captures all relevant context from the conversation.
+    question_generator_template = """Given the following conversation and a follow-up question, rephrase the follow-up question to be a standalone question that captures all relevant context from the conversation.
 
     Chat History:
     {chat_history}
 
-    Follow Up Input: {question}
+    Follow-Up Input: {question}
 
     Standalone question:"""
     question_generator_prompt = PromptTemplate(
@@ -334,16 +310,19 @@ def get_conversation_chain(vectorstore, llm, reranker):
     )
     question_generator = LLMChain(llm=llm, prompt=question_generator_prompt)
 
-    conversation_chain = ConversationalRetrievalChain.from_llm(
-        llm=llm,
+    # Create the QA chain
+    qa_chain = load_qa_chain(llm, chain_type="stuff", prompt=PROMPT)
+
+    conversation_chain = ConversationalRetrievalChain(
         retriever=compression_retriever,
-        memory=memory,
-        combine_docs_chain_kwargs={"prompt": PROMPT},
+        combine_docs_chain=qa_chain,
         question_generator=question_generator,
-        return_source_documents=True
+        return_source_documents=True,
+        memory=memory
     )
 
     return conversation_chain
+
 
 def handle_userinput(user_question, conversation):
     response = conversation({'question': user_question})
