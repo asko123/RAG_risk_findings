@@ -5,7 +5,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline, BitsAndB
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.vectorstores import FAISS as LangchainFAISS
 from langchain.embeddings import HuggingFaceEmbeddings
-from langchain.chains import ConversationalRetrievalChain
+from langchain.chains import ConversationalRetrievalChain, LLMChain
 from langchain.memory import ConversationBufferMemory
 from langchain.prompts import PromptTemplate
 from langchain.retrievers import ContextualCompressionRetriever
@@ -229,11 +229,6 @@ def extract_access_control_info(text):
         r'authorization\s*:\s*([^.!?\n]+)',
         r'least privilege\s*:\s*([^.!?\n]+)',
         r'separation of duties\s*:\s*([^.!?\n]+)',
-        r'need-to-know\s*:\s*([^.!?\n]+)',
-        r'role-based access\s*:\s*([^.!?\n]+)',
-        r'attribute-based access\s*:\s*([^.!?\n]+)',
-        r'mandatory access control\s*:\s*([^.!?\n]+)',
-        r'discretionary access control\s*:\s*([^.!?\n]+)',
         r'access enforcement\s*:\s*([^.!?\n]+)',
         r'remediation\s*:\s*([^.!?\n]+)',  # For remediation strategies
         r'mitigation\s*:\s*([^.!?\n]+)',  # Alternative term for remediation
@@ -325,12 +320,26 @@ def get_conversation_chain(vectorstore, llm, reranker):
         base_retriever=vectorstore.as_retriever(search_kwargs={"k": 5})
     )
 
-    qa_chain = load_qa_chain(llm, chain_type="stuff", prompt=PROMPT)
+    # Create a question generator
+    question_generator_template = """Given the following conversation and a follow up question, rephrase the follow up question to be a standalone question that captures all relevant context from the conversation.
 
-    conversation_chain = ConversationalRetrievalChain(
+    Chat History:
+    {chat_history}
+
+    Follow Up Input: {question}
+
+    Standalone question:"""
+    question_generator_prompt = PromptTemplate(
+        template=question_generator_template, input_variables=["chat_history", "question"]
+    )
+    question_generator = LLMChain(llm=llm, prompt=question_generator_prompt)
+
+    conversation_chain = ConversationalRetrievalChain.from_llm(
+        llm=llm,
         retriever=compression_retriever,
         memory=memory,
-        combine_docs_chain=qa_chain,
+        combine_docs_chain_kwargs={"prompt": PROMPT},
+        question_generator=question_generator,
         return_source_documents=True
     )
 
