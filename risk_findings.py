@@ -16,7 +16,7 @@ import torch
 import os
 from docx import Document
 import pdfplumber
-import re    
+import re
 
 # Set display options
 pd.set_option('display.max_colwidth', None)
@@ -258,9 +258,13 @@ def load_llm():
     return llm
 
 def create_reranker(llm):
+    from langchain.prompts import PromptTemplate
+    from langchain.chains import LLMChain
+    from langchain.retrievers.document_compressors import LLMChainExtractor
+
     extraction_prompt = PromptTemplate(
-        template="Extract key access control information from the following document:\n\n{document}\n\nKey Points:",
-        input_variables=["document"]
+        template="Extract key access control information from the following document:\n\n{text}\n\nKey Points:",
+        input_variables=["text"]
     )
     llm_chain = LLMChain(llm=llm, prompt=extraction_prompt)
     compressor = LLMChainExtractor(llm_chain=llm_chain)
@@ -271,31 +275,30 @@ def get_conversation_chain(vectorstore, llm, reranker):
 
     prompt_template = """You are an AI assistant specializing in cybersecurity with a focus on access control and remediation strategies, particularly NIST SP 800-53 AC-3 Access Enforcement. If you don't know the answer, just say that you don't know—don't try to make up an answer.
 
-    Human: {question}
+Human: {question}
 
-    Assistant: Let me provide a detailed answer, including:
-    1. Relevance to AC-3 Access Enforcement
-    2. Specific access control measures related to AC-3
-    3. An assessment of the effectiveness of these access enforcement measures
-    4. Potential vulnerabilities or gaps in the access enforcement framework
-    5. Detailed remediation strategies for potential issues in access enforcement
-    6. How the identified access enforcement measures and remediation strategies align with AC-3 and other related standards
-    7. Best practices for implementing and maintaining strong access enforcement
-    8. Any additional recommendations for improving overall access enforcement posture
+Assistant: Let me provide a detailed answer, including:
+1. Relevance to AC-3 Access Enforcement
+2. Specific access control measures related to AC-3
+3. An assessment of the effectiveness of these access enforcement measures
+4. Potential vulnerabilities or gaps in the access enforcement framework
+5. Detailed remediation strategies for potential issues in access enforcement
+6. How the identified access enforcement measures and remediation strategies align with AC-3 and other related standards
+7. Best practices for implementing and maintaining strong access enforcement
+8. Any additional recommendations for improving overall access enforcement posture
 
-    {context}
+{context}
 
-    Human: Based on this information, can you answer the question?
+Human: Based on this information, can you answer the question?
 
-    Assistant: Certainly! Here's a detailed answer to your question:
+Assistant: Certainly! Here's a detailed answer to your question:
 
-    """
+"""
 
     PROMPT = PromptTemplate(
         template=prompt_template, input_variables=["context", "question"]
     )
 
-    # Use base_retriever and base_compressor as per the expected parameters
     compression_retriever = ContextualCompressionRetriever(
         base_retriever=vectorstore.as_retriever(search_kwargs={"k": 5}),
         base_compressor=reranker
@@ -304,13 +307,12 @@ def get_conversation_chain(vectorstore, llm, reranker):
     # Create a question generator
     question_generator_template = """Given the following conversation and a follow-up question, rephrase the follow-up question to be a standalone question that captures all relevant context from the conversation.
 
-    Chat History:
-    {chat_history}
+Chat History:
+{chat_history}
 
-    Follow-Up Input: {question}
+Follow-Up Input: {question}
 
-    Standalone question:"""
-
+Standalone question:"""
     question_generator_prompt = PromptTemplate(
         template=question_generator_template, input_variables=["chat_history", "question"]
     )
