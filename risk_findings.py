@@ -11,6 +11,7 @@ from langchain.prompts import PromptTemplate
 from langchain.retrievers import ContextualCompressionRetriever
 from langchain.retrievers.document_compressors import LLMChainExtractor
 from langchain import HuggingFacePipeline
+from langchain.chains.question_answering import load_qa_chain
 import torch
 import os
 from docx import Document
@@ -228,21 +229,12 @@ def extract_access_control_info(text):
         r'authorization\s*:\s*([^.!?\n]+)',
         r'least privilege\s*:\s*([^.!?\n]+)',
         r'separation of duties\s*:\s*([^.!?\n]+)',
-        r'role-based access control\s*:\s*([^.!?\n]+)',
-        r'RBAC\s*:\s*([^.!?\n]+)',
-        r'attribute-based access control\s*:\s*([^.!?\n]+)',
-        r'ABAC\s*:\s*([^.!?\n]+)',
+        r'need-to-know\s*:\s*([^.!?\n]+)',
+        r'role-based access\s*:\s*([^.!?\n]+)',
+        r'attribute-based access\s*:\s*([^.!?\n]+)',
         r'mandatory access control\s*:\s*([^.!?\n]+)',
-        r'MAC\s*:\s*([^.!?\n]+)',
         r'discretionary access control\s*:\s*([^.!?\n]+)',
-        r'DAC\s*:\s*([^.!?\n]+)',
-        r'zero trust\s*:\s*([^.!?\n]+)',
-        r'multi-factor authentication\s*:\s*([^.!?\n]+)',
-        r'MFA\s*:\s*([^.!?\n]+)',
-        r'single sign-on\s*:\s*([^.!?\n]+)',
-        r'SSO\s*:\s*([^.!?\n]+)',
-        r'AC-\d+\s*:\s*([^.!?\n]+)',  # For NIST SP 800-53 AC controls
-        r'A01:2021\s*-\s*([^.!?\n]+)',  # For OWASP Broken Access Control
+        r'access enforcement\s*:\s*([^.!?\n]+)',
         r'remediation\s*:\s*([^.!?\n]+)',  # For remediation strategies
         r'mitigation\s*:\s*([^.!?\n]+)',  # Alternative term for remediation
         r'AC-3\s*:\s*([^.!?\n]+)',  # Specific pattern for AC-3
@@ -304,9 +296,9 @@ def get_conversation_chain(vectorstore, llm, reranker):
 
     prompt_template = """You are an AI assistant specializing in cybersecurity with a focus on access control and remediation strategies, particularly NIST SP 800-53 AC-3 Access Enforcement. If you don't know the answer, just say that you don't know—don't try to make up an answer.
 
-    Question: {question}
+    Human: {question}
 
-    Provide a detailed answer, including:
+    Assistant: Let me provide a detailed answer, including:
     1. Relevance to AC-3 Access Enforcement
     2. Specific access control measures related to AC-3
     3. An assessment of the effectiveness of these access enforcement measures
@@ -316,23 +308,32 @@ def get_conversation_chain(vectorstore, llm, reranker):
     7. Best practices for implementing and maintaining strong access enforcement
     8. Any additional recommendations for improving overall access enforcement posture
 
-    Detailed answer:"""
+    {context}
+
+    Human: Based on this information, can you answer the question?
+
+    Assistant: Certainly! Here's a detailed answer to your question:
+
+    """
 
     PROMPT = PromptTemplate(
-        template=prompt_template, input_variables=["question"]
+        template=prompt_template, input_variables=["context", "question"]
     )
 
     compression_retriever = ContextualCompressionRetriever(
         base_compressor=reranker,
         base_retriever=vectorstore.as_retriever(search_kwargs={"k": 5})
     )
-    conversation_chain = ConversationalRetrievalChain.from_llm(
-        llm=llm, 
-        retriever=compression_retriever, 
-        memory=memory, 
-        prompt=PROMPT,
+
+    qa_chain = load_qa_chain(llm, chain_type="stuff", prompt=PROMPT)
+
+    conversation_chain = ConversationalRetrievalChain(
+        retriever=compression_retriever,
+        memory=memory,
+        combine_docs_chain=qa_chain,
         return_source_documents=True
     )
+
     return conversation_chain
 
 def handle_userinput(user_question, conversation):
