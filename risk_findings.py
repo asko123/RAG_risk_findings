@@ -347,23 +347,23 @@ def get_conversation_chain(vectorstore, llm, reranker):
 
 def handle_userinput(user_question, conversation):
     response = conversation({'question': user_question})
-    chat_history = response['chat_history']
+    
+    latest_response = response['chat_history'][-1].content
     source_documents = response['source_documents']
     
-    for i, message in enumerate(chat_history):
-        if i % 2 == 0:
-            print(f"User: {message.content}")
-        else:
-            print(f"Access Control & Remediation Bot: {message.content}")
-            
+    print(f"Access Control & Remediation Bot: {latest_response}")
+    
     print("\nSource Documents:")
     for doc in source_documents:
-        print(f"- {doc.metadata.get('source', 'Unknown source')}")
+        source = doc.metadata.get('source', 'Unknown source')
+        print(f"- {source}")
         if 'access_control_info' in doc.metadata:
-            print("  Access Control and Remediation Information:")
+            print("  Relevant Access Control and Remediation Information:")
             for info in doc.metadata['access_control_info']:
                 print(f"    - {info}")
     print("\n")
+
+    return latest_response, source_documents
 
 def analyze_access_control_coverage(vectorstore):
     all_access_control_info = []
