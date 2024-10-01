@@ -178,9 +178,21 @@ def load_files(file_paths):
                     text_data.append(text)
             elif extension == '.pdf':
                 text = ''
+                tables = []
                 with pdfplumber.open(file_path) as pdf:
                     for page in pdf.pages:
-                        text += page.extract_text() + '\n'
+                        page_text = page.extract_text()
+                        if page_text:
+                            text += page_text + '\n'
+                        
+                        page_tables = page.extract_tables()
+                        for table in page_tables:
+                            tables.append(table)
+
+                for table in tables:
+                    table_text = '\n'.join([', '.join(filter(None, row)) for row in table if any(row)])
+                    text += f"\nTable:\n{table_text}\nEND TABLE\n"
+
                 text_data.append(text)
             elif extension == '.docx':
                 doc = Document(file_path)
