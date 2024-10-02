@@ -358,13 +358,12 @@ def generate_follow_up_questions(llm, response, n=3):
     result = chain.run(response=response, n=n)
     return result.strip().split("\n")
 
+
 def handle_userinput(user_question, conversation, llm):
     response = conversation({'question': user_question})
     
-    # Extract the final answer from the response
     latest_response = response['chat_history'][-1].content
     
-    # Remove the prompt template from the answer
     clean_response = latest_response.split("Assistant: Certainly! Here's a detailed answer to your question:")[-1].strip()
     
     source_documents = response['source_documents']
