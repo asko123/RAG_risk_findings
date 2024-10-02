@@ -16,13 +16,16 @@ import torch
 import os
 from docx import Document
 import pdfplumber
-import re    
+import re
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Set display options
 pd.set_option('display.max_colwidth', None)
 pd.set_option('display.max_rows', None)
 
-# Static data dumps with focus on access control and remediation
 ACCESS_CONTROL_PRINCIPLES = """
 1. Principle of Least Privilege (PoLP): Users should be given the minimum levels of access needed to perform their job functions.
 2. Separation of Duties (SoD): Critical tasks should be divided among multiple people to prevent fraud and errors.
@@ -164,7 +167,7 @@ def load_files(file_paths):
     text_data = []
     for file_path in file_paths:
         if not os.path.isfile(file_path):
-            print(f"File not found: {file_path}")
+            logging.warning(f"File not found: {file_path}")
             continue
         extension = os.path.splitext(file_path)[1].lower()
         try:
@@ -200,9 +203,9 @@ def load_files(file_paths):
                 text = '\n'.join(fullText)
                 text_data.append(text)
             else:
-                print(f"Unsupported file type: {file_path}")
+                logging.warning(f"Unsupported file type: {file_path}")
         except Exception as e:
-            print(f"Error processing {file_path}: {e}")
+            logging.error(f"Error processing {file_path}: {str(e)}")
     return text_data
 
 def extract_access_control_info(text):
@@ -244,7 +247,7 @@ def split_text(text_data):
     return chunks
 
 def create_vectorstore(chunks):
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L12-v2")
     vectorstore = LangchainFAISS.from_documents(chunks, embeddings)
     return vectorstore
 
@@ -270,9 +273,6 @@ def load_llm():
     return llm
 
 def create_reranker(llm):
-    from langchain.prompts import PromptTemplate
-    from langchain.chains import LLMChain
-    from langchain.retrievers.document_compressors import LLMChainExtractor
     extraction_prompt = PromptTemplate(
         template="Extract key access control information from the following document:\n\n{question}\n\nKey Points:",
         input_variables=["question"]
@@ -310,13 +310,11 @@ def get_conversation_chain(vectorstore, llm, reranker):
         template=prompt_template, input_variables=["text", "question"]
     )
 
-    # Use base_retriever and base_compressor as per the expected parameters
     compression_retriever = ContextualCompressionRetriever(
         base_retriever=vectorstore.as_retriever(search_kwargs={"k": 5}),
         base_compressor=reranker
     )
 
-    # Create a question generator
     question_generator_template = """Given the following conversation and a follow-up question, rephrase the follow-up question to be a standalone question that captures all relevant context from the conversation.
 
     Chat History:
@@ -331,7 +329,6 @@ def get_conversation_chain(vectorstore, llm, reranker):
     )
     question_generator = LLMChain(llm=llm, prompt=question_generator_prompt)
 
-    # Create the QA chain
     qa_chain = load_qa_chain(llm, chain_type="stuff", prompt=PROMPT, document_variable_name="text")
 
     conversation_chain = ConversationalRetrievalChain(
@@ -345,7 +342,23 @@ def get_conversation_chain(vectorstore, llm, reranker):
 
     return conversation_chain
 
-def handle_userinput(user_question, conversation):
+def summarize_source(source_text, max_length=100):
+    """Summarize the source text to a maximum length."""
+    if len(source_text) <= max_length:
+        return source_text
+    return source_text[:max_length] + "..."
+
+def generate_follow_up_questions(llm, response, n=3):
+    """Generate follow-up questions based on the current response."""
+    prompt = PromptTemplate(
+        input_variables=["response", "n"],
+        template="Based on the following response, generate {n} relevant follow-up questions:\n\nResponse: {response}\n\nFollow-up Questions:"
+    )
+    chain = LLMChain(llm=llm, prompt=prompt)
+    result = chain.run(response=response, n=n)
+    return result.strip().split("\n")
+
+def handle_userinput(user_question, conversation, llm):
     response = conversation({'question': user_question})
     
     latest_response = response['chat_history'][-1].content
@@ -353,17 +366,29 @@ def handle_userinput(user_question, conversation):
     
     print(f"Access Control & Remediation Bot: {latest_response}")
     
-    print("\nSource Documents:")
-    for doc in source_documents:
+    print("\nSource Documents (Top 3):")
+    for i, doc in enumerate(source_documents[:3], 1):
         source = doc.metadata.get('source', 'Unknown source')
-        print(f"- {source}")
+        summary = summarize_source(doc.page_content)
+        print(f"{i}. {source}")
+        print(f"   Summary: {summary}")
         if 'access_control_info' in doc.metadata:
-            print("  Relevant Access Control and Remediation Information:")
-            for info in doc.metadata['access_control_info']:
+            print("   Relevant Access Control and Remediation Information:")
+            for info in doc.metadata['access_control_info'][:2]:  # Limit to 2 items
                 print(f"    - {info}")
+    
+    if len(source_documents) > 3:
+        print(f"\n... and {len(source_documents) - 3} more sources.")
+    
+    # Generate follow-up questions
+    follow_up_questions = generate_follow_up_questions(llm, latest_response)
+    print("\nSuggested follow-up questions:")
+    for i, question in enumerate(follow_up_questions, 1):
+        print(f"{i}. {question}")
+    
     print("\n")
 
-    return latest_response, source_documents
+    return latest_response, source_documents, follow_up_questions
 
 def analyze_access_control_coverage(vectorstore):
     all_access_control_info = []
@@ -389,41 +414,67 @@ def analyze_access_control_coverage(vectorstore):
     print(ac3_counts.head(5))
 
 def main():
-    print("Executing RAG system for Access Control and Remediation Analysis...")
-    
-    # Add static data
-    text_data = [ACCESS_CONTROL_PRINCIPLES, OWASP_TOP_10_2021, NIST_ACCESS_CONTROL, ACCESS_CONTROL_REMEDIATION, AC3_ACCESS_ENFORCEMENT]
-    
-    # Directory containing data files
-    data_dir = 'data'
-    # Supported file extensions
-    supported_extensions = ['.csv', '.txt', '.pdf', '.docx']
-    # Get list of all files in data_dir with supported extensions
-    file_paths = []
-    for root, dirs, files in os.walk(data_dir):
-        for file in files:
-            if os.path.splitext(file)[1].lower() in supported_extensions:
-                file_paths.append(os.path.join(root, file))
-    
-    # Load data from all files
-    text_data.extend(load_files(file_paths))
-    
-    # Split and process text
-    chunks = split_text(text_data)
-    vectorstore = create_vectorstore(chunks)
-    llm = load_llm()
-    reranker = create_reranker(llm)
-    conversation = get_conversation_chain(vectorstore, llm, reranker)
+    try:
+        logging.info("Executing RAG system for Access Control and Remediation Analysis...")
+        
+        # Add static data
+        text_data = [ACCESS_CONTROL_PRINCIPLES, OWASP_TOP_10_2021, NIST_ACCESS_CONTROL, ACCESS_CONTROL_REMEDIATION, AC3_ACCESS_ENFORCEMENT]
+        
+        # Directory containing data files
+        data_dir = 'data'
+        # Supported file extensions
+        supported_extensions = ['.csv', '.txt', '.pdf', '.docx']
+        # Get list of all files in data_dir with supported extensions
+        file_paths = []
+        for root, dirs, files in os.walk(data_dir):
+            for file in files:
+                if os.path.splitext(file)[1].lower() in supported_extensions:
+                    file_paths.append(os.path.join(root, file))
+        
+        # Load data from all files
+        text_data.extend(load_files(file_paths))
+        
+        # Split and process text
+        chunks = split_text(text_data)
+        vectorstore = create_vectorstore(chunks)
+        llm = load_llm()
+        reranker = create_reranker(llm)
+        conversation = get_conversation_chain(vectorstore, llm, reranker)
 
-    # Analyze access control and remediation coverage
-    analyze_access_control_coverage(vectorstore)
+        # Analyze access control and remediation coverage
+        analyze_access_control_coverage(vectorstore)
 
-    print("Access Control and Remediation RAG System Ready. Type 'exit' to quit.")
-    while True:
-        user_question = input("Ask a question about access control and remediation in cybersecurity (or type 'exit' to quit): ")
-        if user_question.lower() == 'exit':
-            break
-        handle_userinput(user_question, conversation)
+        logging.info("Access Control and Remediation RAG System Ready.")
+        print("Access Control and Remediation RAG System Ready. Type 'exit' to quit.")
+        while True:
+            user_question = input("Ask a question about access control and remediation in cybersecurity (or type 'exit' to quit): ")
+            if user_question.lower() == 'exit':
+                break
+            latest_response, source_documents, follow_up_questions = handle_userinput(user_question, conversation, llm)
+            
+            # Allow the user to select a follow-up question
+            while True:
+                follow_up = input("Enter the number of a follow-up question to ask, or press Enter to continue: ")
+                if follow_up == "":
+                    break
+                try:
+                    follow_up_index = int(follow_up) - 1
+                    if 0 <= follow_up_index < len(follow_up_questions):
+                        user_question = follow_up_questions[follow_up_index]
+                        print(f"\nAsking follow-up question: {user_question}")
+                        latest_response, source_documents, follow_up_questions = handle_userinput(user_question, conversation, llm)
+                    else:
+                        print("Invalid selection. Please try again.")
+                except ValueError:
+                    print("Invalid input. Please enter a number or press Enter to continue.")
+
+    except Exception as e:
+        logging.error(f"An error occurred in the main function: {str(e)}")
+        raise
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        logging.critical(f"Critical error: {str(e)}")
+        print("An error occurred. Please check the log file for details.")
