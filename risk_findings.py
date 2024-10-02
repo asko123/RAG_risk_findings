@@ -247,12 +247,12 @@ def split_text(text_data):
     return chunks
 
 def create_vectorstore(chunks):
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L12-v2")
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
     vectorstore = LangchainFAISS.from_documents(chunks, embeddings)
     return vectorstore
 
 def load_llm():
-    model_id = "meta-llama/Llama-2-13b-chat-hf"
+    model_id = "meta-llama/Meta-Llama-3-8B"
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     
     nf4_config = BitsAndBytesConfig(
