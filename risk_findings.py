@@ -284,26 +284,24 @@ def create_reranker(llm):
 def get_conversation_chain(vectorstore, llm, reranker):
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True, output_key='extracted_info')
 
-    prompt_template = """You are an AI assistant specializing in cybersecurity with a focus on access control and remediation strategies, particularly NIST SP 800-53 AC-3 Access Enforcement. If you don't know the answer, just say that you don't know—don't try to make up an answer.
+    prompt_template = """You are an AI assistant specializing in cybersecurity with a focus on access control and remediation strategies, particularly NIST SP 800-53 AC-3 Access Enforcement. Provide a concise, non-repetitive answer to the following question, using the given information. If you don't know the answer, simply say so.
 
-    Human: {question}
+    Question: {question}
 
-    Assistant: Let me provide a detailed answer, including:
-    1. Relevance to AC-3 Access Enforcement
-    2. Specific access control measures related to AC-3
-    3. An assessment of the effectiveness of these access enforcement measures
-    4. Potential vulnerabilities or gaps in the access enforcement framework
-    5. Detailed remediation strategies for potential issues in access enforcement
-    6. How the identified access enforcement measures and remediation strategies align with AC-3 and other related standards
-    7. Best practices for implementing and maintaining strong access enforcement
-    8. Any additional recommendations for improving overall access enforcement posture
-
+    Information:
     {text}
 
-    Human: Based on this information, can you answer the question?
+    In your answer, address the following points without repeating them as a list:
+    - Relevance to AC-3 Access Enforcement
+    - Specific access control measures
+    - Effectiveness assessment
+    - Potential vulnerabilities or gaps
+    - Remediation strategies
+    - Alignment with standards
+    - Best practices
+    - Additional recommendations
 
-    Assistant: Certainly! Here's a detailed answer to your question:
-
+    Concise Answer:
     """
 
     PROMPT = PromptTemplate(
