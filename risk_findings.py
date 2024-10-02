@@ -361,34 +361,40 @@ def generate_follow_up_questions(llm, response, n=3):
 def handle_userinput(user_question, conversation, llm):
     response = conversation({'question': user_question})
     
+    # Extract the final answer from the response
     latest_response = response['chat_history'][-1].content
+    
+    # Remove the prompt template from the answer
+    clean_response = latest_response.split("Assistant: Certainly! Here's a detailed answer to your question:")[-1].strip()
+    
     source_documents = response['source_documents']
     
-    print(f"Access Control & Remediation Bot: {latest_response}")
+    print("\n--- Answer ---")
+    print(clean_response)
     
-    print("\nSource Documents (Top 3):")
+    print("\n--- Sources ---")
     for i, doc in enumerate(source_documents[:3], 1):
         source = doc.metadata.get('source', 'Unknown source')
-        summary = summarize_source(doc.page_content)
         print(f"{i}. {source}")
-        print(f"   Summary: {summary}")
         if 'access_control_info' in doc.metadata:
-            print("   Relevant Access Control and Remediation Information:")
-            for info in doc.metadata['access_control_info'][:2]:  # Limit to 2 items
-                print(f"    - {info}")
+            relevant_info = doc.metadata['access_control_info'][:2]  # Limit to 2 items
+            if relevant_info:
+                print("   Relevant information:")
+                for info in relevant_info:
+                    print(f"    - {info}")
     
     if len(source_documents) > 3:
-        print(f"\n... and {len(source_documents) - 3} more sources.")
+        print(f"... and {len(source_documents) - 3} more sources.")
     
     # Generate follow-up questions
-    follow_up_questions = generate_follow_up_questions(llm, latest_response)
-    print("\nSuggested follow-up questions:")
+    follow_up_questions = generate_follow_up_questions(llm, clean_response)
+    print("\n--- Suggested follow-up questions ---")
     for i, question in enumerate(follow_up_questions, 1):
         print(f"{i}. {question}")
     
     print("\n")
 
-    return latest_response, source_documents, follow_up_questions
+    return clean_response, source_documents, follow_up_questions
 
 def analyze_access_control_coverage(vectorstore):
     all_access_control_info = []
