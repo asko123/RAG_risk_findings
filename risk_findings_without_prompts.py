@@ -1,12 +1,13 @@
 import pandas as pd
 import numpy as np
 import faiss
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline, BitsAndBytesConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification, pipeline
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.vectorstores import FAISS as LangchainFAISS
 from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.chains import ConversationalRetrievalChain
-from langchain.memory import ConversationBufferMemory
+from langchain.memory import ConversationBufferWindowMemory
+from langchain.retrievers import BaseRetriever
 from langchain import HuggingFacePipeline
 import torch
 import os
@@ -251,35 +252,74 @@ def load_llm():
     model_id = "meta-llama/Meta-Llama-3-8B"
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     
-    nf4_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_compute_dtype=torch.bfloat16
-    )
-    
+    # Assuming the model uses bfloat16 precision and requires device mapping
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
-        torch_dtype=torch.float16,
-        quantization_config=nf4_config,
+        torch_dtype=torch.bfloat16,
         device_map="auto"
     )
     
-    pipe = pipeline("text-generation", model=model, tokenizer=tokenizer, temperature=0.1)
+    pipe = pipeline(
+        "text-generation",
+        model=model,
+        tokenizer=tokenizer,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        temperature=0.1,
+        max_length=1024,
+        repetition_penalty=1.2,
+        no_repeat_ngram_size=3
+    )
     llm = HuggingFacePipeline(pipeline=pipe)
     return llm
 
-def get_conversation_chain(vectorstore, llm):
-    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+def create_reranker():
+    # Load a model for sequence classification (e.g., cross-encoder for re-ranking)
+    reranker_model_id = "cross-encoder/ms-marco-MiniLM-L-12-v2"
+    reranker_tokenizer = AutoTokenizer.from_pretrained(reranker_model_id)
+    reranker_model = AutoModelForSequenceClassification.from_pretrained(reranker_model_id)
+    reranker_pipeline = pipeline("text-classification", model=reranker_model, tokenizer=reranker_tokenizer, device_map="auto")
+    return reranker_pipeline
+
+def rerank_documents(question, docs, reranker):
+    # Prepare inputs for the reranker
+    inputs = [f"{question} [SEP] {doc.page_content}" for doc in docs]
+    # Get relevance scores
+    scores = reranker(inputs, truncation=True)
+    # Attach scores to docs and sort
+    for doc, score in zip(docs, scores):
+        doc.metadata["score"] = score["score"]
+    reranked_docs = sorted(docs, key=lambda x: x.metadata["score"], reverse=True)
+    return reranked_docs
+
+class RerankRetriever(BaseRetriever):
+    def __init__(self, vectorstore, reranker):
+        self.vectorstore = vectorstore
+        self.reranker = reranker
+
+    def get_relevant_documents(self, query):
+        docs = self.vectorstore.similarity_search(query, k=10)
+        reranked_docs = rerank_documents(query, docs, self.reranker)
+        return reranked_docs[:5]  # Return top 5 reranked docs
+
+    async def aget_relevant_documents(self, query):
+        return self.get_relevant_documents(query)
+
+def get_conversation_chain(vectorstore, llm, reranker):
+    memory = ConversationBufferWindowMemory(k=1, memory_key="chat_history", return_messages=True)
+    retriever = RerankRetriever(vectorstore, reranker)
     conversation_chain = ConversationalRetrievalChain.from_llm(
         llm=llm,
-        retriever=vectorstore.as_retriever(search_kwargs={"k": 5}),
-        memory=memory
+        retriever=retriever,
+        memory=memory,
+        get_chat_history=lambda x: "",
+        verbose=False
     )
     return conversation_chain
 
 def handle_userinput(user_question, conversation):
     response = conversation({'question': user_question})
-    latest_response = response['answer']
+    latest_response = response['answer'].strip()
     
     print("\n--- Answer ---")
     print(latest_response)
@@ -334,26 +374,24 @@ def main():
         chunks = split_text(text_data)
         vectorstore = create_vectorstore(chunks)
         llm = load_llm()
-        conversation = get_conversation_chain(vectorstore, llm)
+        reranker = create_reranker()
+        conversation = get_conversation_chain(vectorstore, llm, reranker)
 
         # Analyze access control and remediation coverage
         analyze_access_control_coverage(vectorstore)
 
         logging.info("Access Control and Remediation RAG System Ready.")
         print("Access Control and Remediation RAG System Ready. Type 'exit' to quit.")
+
         while True:
             user_question = input("Ask a question about access control and remediation in cybersecurity (or type 'exit' to quit): ")
-            if user_question.lower() == 'exit':
+            if user_question.strip().lower() == 'exit':
                 break
-            latest_response = handle_userinput(user_question, conversation)
+            handle_userinput(user_question, conversation)
 
     except Exception as e:
         logging.error(f"An error occurred in the main function: {str(e)}")
-        raise
+        print("An error occurred. Please check the log for details.")
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        logging.critical(f"Critical error: {str(e)}")
-        print("An error occurred. Please check the log file for details.")
+    main()
