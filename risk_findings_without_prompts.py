@@ -15,6 +15,8 @@ from docx import Document
 import pdfplumber
 import re
 import logging
+from langchain.vectorstores.base import VectorStoreRetriever 
+from langchain.retrievers import VectorStoreRetriever
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -292,8 +294,9 @@ def rerank_documents(question, docs, reranker):
     reranked_docs = sorted(docs, key=lambda x: x.metadata["score"], reverse=True)
     return reranked_docs
 
-class RerankRetriever(BaseRetriever):
+class RerankRetriever(VectorStoreRetriever):  # Changed base class
     def __init__(self, vectorstore, reranker):
+        super().__init__(vectorstore=vectorstore)  # Properly initialize base class
         self.vectorstore = vectorstore
         self.reranker = reranker
 
