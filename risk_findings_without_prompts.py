@@ -15,7 +15,8 @@ from docx import Document
 import pdfplumber
 import re
 import logging
-from langchain.retrievers import VectorStoreRetriever
+from langchain.vectorstores.base import VectorStoreRetriever 
+#from langchain.retrievers import VectorStoreRetriever
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -275,17 +276,17 @@ def load_llm():
     return llm
 
 def create_reranker():
-    # Load a model for sequence classification (e.g., cross-encoder for re-ranking)
-    reranker_model_id = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-    reranker_pipeline = pipeline("text-classification", model=reranker_model_id, device_map="auto")
-    return reranker_pipeline
+    try:
+        reranker_model_id = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        reranker_pipeline = pipeline("text-classification", model=reranker_model_id, device="cpu")
+        return reranker_pipeline
+    except Exception as e:
+        logging.error(f"Error creating reranker: {e}")
+        raise
 
 def rerank_documents(question, docs, reranker):
-    # Prepare inputs for the reranker
     inputs = [f"{question} [SEP] {doc.page_content}" for doc in docs]
-    # Get relevance scores
     scores = reranker(inputs, truncation=True)
-    # Attach scores to docs and sort
     for doc, score in zip(docs, scores):
         doc.metadata["score"] = score["score"]
     reranked_docs = sorted(docs, key=lambda x: x.metadata["score"], reverse=True)
@@ -293,17 +294,13 @@ def rerank_documents(question, docs, reranker):
 
 class RerankRetriever(VectorStoreRetriever):
     def __init__(self, vectorstore, reranker):
-        # Initialize the base class
         super().__init__(vectorstore=vectorstore)
-        # Ensure reranker is set after base class initialization
         self.reranker = reranker
 
     def get_relevant_documents(self, query):
-        # Retrieve documents using the vectorstore
-        docs = self.vectorstore.similarity_search(query, k=10)
-        # Re-rank the documents
+        docs = super().get_relevant_documents(query)
         reranked_docs = rerank_documents(query, docs, self.reranker)
-        return reranked_docs[:5]  # Return top N reranked docs
+        return reranked_docs[:5]
 
     async def aget_relevant_documents(self, query):
         return self.get_relevant_documents(query)
@@ -312,7 +309,7 @@ def get_conversation_chain(vectorstore, llm, reranker):
     memory = ConversationBufferWindowMemory(
         k=1, memory_key="chat_history", return_messages=True
     )
-    retriever = RerankRetriever(vectorstore, reranker)
+    retriever = RerankRetriever(vectorstore=vectorstore, reranker=reranker)
     conversation_chain = ConversationalRetrievalChain.from_llm(
         llm=llm,
         retriever=retriever,
