@@ -7,7 +7,7 @@ from langchain.vectorstores import FAISS as LangchainFAISS
 from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferWindowMemory
-from langchain.retrievers import BaseRetriever
+from langchain.schema import BaseRetriever
 from langchain import HuggingFacePipeline
 import torch
 import os
@@ -276,8 +276,8 @@ def load_llm():
 def create_reranker():
     # Load a model for sequence classification (e.g., cross-encoder for re-ranking)
     reranker_model_id = "cross-encoder/ms-marco-MiniLM-L-12-v2"
-    reranker_tokenizer = AutoTokenizer.from_pretrained(reranker_model_id)
-    reranker_model = AutoModelForSequenceClassification.from_pretrained(reranker_model_id)
+    reranker_tokenizer = AutoTokenizer.from_pretrained(reranker_model_id, from_flax=True)
+    reranker_model = AutoModelForSequenceClassification.from_pretrained(reranker_model_id, from_flax=True)
     reranker_pipeline = pipeline("text-classification", model=reranker_model, tokenizer=reranker_tokenizer, device_map="auto")
     return reranker_pipeline
 
