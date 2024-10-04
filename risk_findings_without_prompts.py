@@ -278,7 +278,7 @@ def load_llm():
 def create_reranker():
     try:
         reranker_model_id = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-        reranker_pipeline = pipeline("text-classification", model=reranker_model_id, device="cpu")
+        reranker_pipeline = pipeline("text-classification", model=reranker_model_id, device="cuda", from_flax=True)
         return reranker_pipeline
     except Exception as e:
         logging.error(f"Error creating reranker: {e}")
