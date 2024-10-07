@@ -1,23 +1,22 @@
 import pandas as pd
 import numpy as np
 import faiss
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline, BitsAndBytesConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification, pipeline
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.vectorstores import FAISS as LangchainFAISS
 from langchain.embeddings import HuggingFaceEmbeddings
-from langchain.chains import ConversationalRetrievalChain, LLMChain
-from langchain.memory import ConversationBufferMemory
-from langchain.prompts import PromptTemplate
-from langchain.retrievers import ContextualCompressionRetriever
-from langchain.retrievers.document_compressors import LLMChainExtractor
+from langchain.chains import ConversationalRetrievalChain
+from langchain.memory import ConversationBufferWindowMemory
+from langchain.schema import BaseRetriever
 from langchain import HuggingFacePipeline
-from langchain.chains.question_answering import load_qa_chain
 import torch
 import os
 from docx import Document
 import pdfplumber
 import re
 import logging
+from langchain.vectorstores.base import VectorStoreRetriever 
+#from langchain.retrievers import VectorStoreRetriever
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -219,7 +218,7 @@ def extract_access_control_info(text):
         r'role-based access\s*:\s*([^.!?\n]+)',
         r'multi-factor authentication\s*:\s*([^.!?\n]+)',
         r'access enforcement\s*:\s*([^.!?\n]+)',
-        r'AC-3\s*:\s*([^.!?\n]+)',  # Specific pattern for AC-3
+        r'AC-3\s*:\s*([^.!?\n]+)',
         r'Access Enforcement\s*:\s*([^.!?\n]+)',
         r'logical access\s*:\s*([^.!?\n]+)',
         r'access control policies\s*:\s*([^.!?\n]+)',
@@ -252,146 +251,83 @@ def create_vectorstore(chunks):
     return vectorstore
 
 def load_llm():
-    model_id = "meta-llama/Meta-Llama-3-8B"
+    model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     
-    nf4_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_compute_dtype=torch.bfloat16
-    )
-    
+    # Assuming the model uses bfloat16 precision and requires device mapping
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
-        torch_dtype=torch.float16,
-        quantization_config=nf4_config,
+        torch_dtype=torch.bfloat16,
         device_map="auto"
     )
     
-    pipe = pipeline("text-generation", model=model, tokenizer=tokenizer, temperature=0.1)
+    pipe = pipeline(
+        "text-generation",
+        model=model,
+        tokenizer=tokenizer,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        temperature=0.1,
+        max_length=1024,
+        repetition_penalty=1.2,
+        no_repeat_ngram_size=3
+    )
     llm = HuggingFacePipeline(pipeline=pipe)
     return llm
 
-def create_reranker(llm):
-    extraction_prompt = PromptTemplate(
-        template="Extract key access control information from the following document:\n\n{question}\n\nKey Points:",
-        input_variables=["question"]
-    )
-    llm_chain = LLMChain(llm=llm, prompt=extraction_prompt, output_key='extracted_info')
-    compressor = LLMChainExtractor(llm_chain=llm_chain, input_variables='question')
-    return compressor
+def create_reranker():
+    try:
+        reranker_model_id = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        
+        reranker_pipeline = pipeline("text-classification", model=reranker_model_id, device="cuda")
+        return reranker_pipeline
+    except Exception as e:
+        logging.error(f"Error creating reranker: {e}")
+        raise
+
+def rerank_documents(question, docs, reranker):
+    inputs = [f"{question} [SEP] {doc.page_content}" for doc in docs]
+    scores = reranker(inputs, truncation=True)
+    for doc, score in zip(docs, scores):
+        doc.metadata["score"] = score["score"]
+    reranked_docs = sorted(docs, key=lambda x: x.metadata["score"], reverse=True)
+    return reranked_docs
+
+class RerankRetriever(VectorStoreRetriever):
+    def __init__(self, vectorstore, reranker):
+        super().__init__(vectorstore=vectorstore)
+        self.reranker = reranker
+
+    def get_relevant_documents(self, query):
+        docs = super().get_relevant_documents(query)
+        reranked_docs = rerank_documents(query, docs, self.reranker)
+        return reranked_docs[:5]
+
+    async def aget_relevant_documents(self, query):
+        return self.get_relevant_documents(query)
 
 def get_conversation_chain(vectorstore, llm, reranker):
-    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True, output_key='extracted_info')
-
-    prompt_template = """You are an AI assistant specializing in cybersecurity with a focus on access control and remediation strategies, particularly NIST SP 800-53 AC-3 Access Enforcement. Provide a concise, non-repetitive answer to the following question, using the given information. If you don't know the answer, simply say so.
-
-    Question: {question}
-
-    Information:
-    {text}
-
-    In your answer, address the following points without repeating them as a list:
-    - Relevance to AC-3 Access Enforcement
-    - Specific access control measures
-    - Effectiveness assessment
-    - Potential vulnerabilities or gaps
-    - Remediation strategies
-    - Alignment with standards
-    - Best practices
-    - Additional recommendations
-
-    Concise Answer:
-    """
-
-    PROMPT = PromptTemplate(
-        template=prompt_template, input_variables=["text", "question"]
+    memory = ConversationBufferWindowMemory(
+        k=1, memory_key="chat_history", return_messages=True
     )
-
-    compression_retriever = ContextualCompressionRetriever(
-        base_retriever=vectorstore.as_retriever(search_kwargs={"k": 5}),
-        base_compressor=reranker
-    )
-
-    question_generator_template = """Given the following conversation and a follow-up question, rephrase the follow-up question to be a standalone question that captures all relevant context from the conversation.
-
-    Chat History:
-    {chat_history}
-
-    Follow-Up Input: {question}
-
-    Standalone question:"""
-
-    question_generator_prompt = PromptTemplate(
-        template=question_generator_template, input_variables=["chat_history", "question"]
-    )
-    question_generator = LLMChain(llm=llm, prompt=question_generator_prompt)
-
-    qa_chain = load_qa_chain(llm, chain_type="stuff", prompt=PROMPT, document_variable_name="text")
-
-    conversation_chain = ConversationalRetrievalChain(
-        retriever=compression_retriever,
-        combine_docs_chain=qa_chain,
-        question_generator=question_generator,
-        return_source_documents=True,
+    retriever = RerankRetriever(vectorstore=vectorstore, reranker=reranker)
+    conversation_chain = ConversationalRetrievalChain.from_llm(
+        llm=llm,
+        retriever=retriever,
         memory=memory,
-        output_key='extracted_info'
+        get_chat_history=lambda x: "",
+        verbose=False,
     )
-
     return conversation_chain
 
-def summarize_source(source_text, max_length=100):
-    """Summarize the source text to a maximum length."""
-    if len(source_text) <= max_length:
-        return source_text
-    return source_text[:max_length] + "..."
-
-def generate_follow_up_questions(llm, response, n=3):
-    """Generate follow-up questions based on the current response."""
-    prompt = PromptTemplate(
-        input_variables=["response", "n"],
-        template="Based on the following response, generate {n} relevant follow-up questions:\n\nResponse: {response}\n\nFollow-up Questions:"
-    )
-    chain = LLMChain(llm=llm, prompt=prompt)
-    result = chain.run(response=response, n=n)
-    return result.strip().split("\n")
-
-
-def handle_userinput(user_question, conversation, llm):
+def handle_userinput(user_question, conversation):
     response = conversation({'question': user_question})
-    
-    latest_response = response['chat_history'][-1].content
-    
-    clean_response = latest_response.split("Assistant: Certainly! Here's a detailed answer to your question:")[-1].strip()
-    
-    source_documents = response['source_documents']
+    latest_response = response['answer'].strip()
     
     print("\n--- Answer ---")
-    print(clean_response)
+    print(latest_response)
     
-    print("\n--- Sources ---")
-    for i, doc in enumerate(source_documents[:3], 1):
-        source = doc.metadata.get('source', 'Unknown source')
-        print(f"{i}. {source}")
-        if 'access_control_info' in doc.metadata:
-            relevant_info = doc.metadata['access_control_info'][:2]  # Limit to 2 items
-            if relevant_info:
-                print("   Relevant information:")
-                for info in relevant_info:
-                    print(f"    - {info}")
-    
-    if len(source_documents) > 3:
-        print(f"... and {len(source_documents) - 3} more sources.")
-    
-    # Generate follow-up questions
-    follow_up_questions = generate_follow_up_questions(llm, clean_response)
-    print("\n--- Suggested follow-up questions ---")
-    for i, question in enumerate(follow_up_questions, 1):
-        print(f"{i}. {question}")
-    
-    print("\n")
-
-    return clean_response, source_documents, follow_up_questions
+    return latest_response
 
 def analyze_access_control_coverage(vectorstore):
     all_access_control_info = []
@@ -441,7 +377,7 @@ def main():
         chunks = split_text(text_data)
         vectorstore = create_vectorstore(chunks)
         llm = load_llm()
-        reranker = create_reranker(llm)
+        reranker = create_reranker()
         conversation = get_conversation_chain(vectorstore, llm, reranker)
 
         # Analyze access control and remediation coverage
@@ -449,35 +385,16 @@ def main():
 
         logging.info("Access Control and Remediation RAG System Ready.")
         print("Access Control and Remediation RAG System Ready. Type 'exit' to quit.")
+
         while True:
             user_question = input("Ask a question about access control and remediation in cybersecurity (or type 'exit' to quit): ")
-            if user_question.lower() == 'exit':
+            if user_question.strip().lower() == 'exit':
                 break
-            latest_response, source_documents, follow_up_questions = handle_userinput(user_question, conversation, llm)
-            
-            # Allow the user to select a follow-up question
-            while True:
-                follow_up = input("Enter the number of a follow-up question to ask, or press Enter to continue: ")
-                if follow_up == "":
-                    break
-                try:
-                    follow_up_index = int(follow_up) - 1
-                    if 0 <= follow_up_index < len(follow_up_questions):
-                        user_question = follow_up_questions[follow_up_index]
-                        print(f"\nAsking follow-up question: {user_question}")
-                        latest_response, source_documents, follow_up_questions = handle_userinput(user_question, conversation, llm)
-                    else:
-                        print("Invalid selection. Please try again.")
-                except ValueError:
-                    print("Invalid input. Please enter a number or press Enter to continue.")
+            handle_userinput(user_question, conversation)
 
     except Exception as e:
         logging.error(f"An error occurred in the main function: {str(e)}")
-        raise
+        print("An error occurred. Please check the log for details.")
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        logging.critical(f"Critical error: {str(e)}")
-        print("An error occurred. Please check the log file for details.")
+    main()
