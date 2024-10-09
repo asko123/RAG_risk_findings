@@ -251,7 +251,9 @@ def create_vectorstore(chunks):
     return vectorstore
 
 def load_llm():
-    model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
+    #model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
+    model_id = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    # https://www.llama.com/docs/model-cards-and-prompt-formats/meta-llama-3/#llama-3-instruct
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     
     # Assuming the model uses bfloat16 precision and requires device mapping
@@ -260,6 +262,16 @@ def load_llm():
         torch_dtype=torch.bfloat16,
         device_map="auto"
     )
+    
+    def llama_3_instruct_prompt(prompt, chat_history):
+        system_message = "You are a helpful AI assistant for cybersecurity, specializing in access control and remediation strategies."
+        formatted_prompt = f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{system_message}<|eot_id|>"
+        
+        for turn in chat_history:
+            formatted_prompt += f"<|start_header_id|>user<|end_header_id|>\n\n{turn[0]}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n{turn[1]}<|eot_id|>"
+        
+        formatted_prompt += f"<|start_header_id|>user<|end_header_id|>\n\n{prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n"
+        return formatted_prompt
     
     pipe = pipeline(
         "text-generation",
@@ -272,7 +284,9 @@ def load_llm():
         repetition_penalty=1.2,
         no_repeat_ngram_size=3
     )
-    llm = HuggingFacePipeline(pipeline=pipe)
+    
+    llm = HuggingFacePipeline(pipeline=pipe, prompt_format=llama_3_instruct_prompt)
+    
     return llm
 
 def create_reranker():
