@@ -251,12 +251,9 @@ def create_vectorstore(chunks):
     return vectorstore
 
 def load_llm():
-    #model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
     model_id = "meta-llama/Meta-Llama-3.1-8B-Instruct"
-    # https://www.llama.com/docs/model-cards-and-prompt-formats/meta-llama-3/#llama-3-instruct
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     
-    # Assuming the model uses bfloat16 precision and requires device mapping
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         torch_dtype=torch.bfloat16,
@@ -285,9 +282,9 @@ def load_llm():
         no_repeat_ngram_size=3
     )
     
-    llm = HuggingFacePipeline(pipeline=pipe, prompt_format=llama_3_instruct_prompt)
+    llm = HuggingFacePipeline(pipeline=pipe)
     
-    return llm
+    return llm, llama_3_instruct_prompt
 
 def create_reranker():
     try:
@@ -320,7 +317,7 @@ class RerankRetriever(VectorStoreRetriever):
     async def aget_relevant_documents(self, query):
         return self.get_relevant_documents(query)
 
-def get_conversation_chain(vectorstore, llm, reranker):
+def get_conversation_chain(vectorstore, llm, reranker, prompt_format):
     memory = ConversationBufferWindowMemory(
         k=1, memory_key="chat_history", return_messages=True
     )
@@ -331,6 +328,7 @@ def get_conversation_chain(vectorstore, llm, reranker):
         memory=memory,
         get_chat_history=lambda x: "",
         verbose=False,
+        combine_docs_chain_kwargs={"prompt": prompt_format}
     )
     return conversation_chain
 
@@ -390,9 +388,9 @@ def main():
         # Split and process text
         chunks = split_text(text_data)
         vectorstore = create_vectorstore(chunks)
-        llm = load_llm()
+        llm, prompt_format = load_llm()
         reranker = create_reranker()
-        conversation = get_conversation_chain(vectorstore, llm, reranker)
+        conversation = get_conversation_chain(vectorstore, llm, reranker, prompt_format)
 
         # Analyze access control and remediation coverage
         analyze_access_control_coverage(vectorstore)
