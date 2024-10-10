@@ -251,7 +251,15 @@ def create_vectorstore(chunks):
 
 # Custom LLM class to handle prompt formatting
 class CustomLLM(LLM):
-    def __init__(self, pipeline, prompt_format):
+    pipeline: Any
+    prompt_format: Any
+    chat_history: List[tuple]
+
+    class Config:
+        extra = Extra.allow  # Allow extra fields not defined in the model
+
+    def __init__(self, pipeline, prompt_format, **kwargs):
+        super().__init__(**kwargs)  # Pass any additional arguments to the BaseModel constructor
         self.pipeline = pipeline
         self.prompt_format = prompt_format
         self.chat_history = []
@@ -263,17 +271,23 @@ class CustomLLM(LLM):
     def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
         # Format the prompt using the custom prompt function
         formatted_prompt = self.prompt_format(prompt, self.chat_history)
+        
+        # Debugging: print or log the formatted prompt
+        logging.debug(f"Formatted Prompt:\n{formatted_prompt}")
+        
+        # Generate the response
         response = self.pipeline(formatted_prompt, max_length=1024, do_sample=True)[0]['generated_text']
+        
+        # Debugging: print or log the raw model output
+        logging.debug(f"Raw Model Output:\n{response}")
+        
         # Extract the assistant's reply from the response
-        # Assume the assistant's reply is after the last '<|start_header_id|>assistant<|end_header_id|>'
-        assistant_reply = response.split('<|start_header_id|>assistant<|end_header_id|>')[-1]
-        assistant_reply = assistant_reply.strip().split('<|eot_id|>')[0].strip()
+        generated_content = response[len(formatted_prompt):]
+        assistant_reply = generated_content.split('<|eot_id|>')[0].strip()
+        
         # Update chat history
         self.chat_history.append((prompt, assistant_reply))
         return assistant_reply
-
-    def call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
-        return self._call(prompt, stop)
 
 def load_llm():
     model_id = "meta-llama/Meta-Llama-3.1-8B-Instruct"
