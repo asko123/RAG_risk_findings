@@ -16,6 +16,7 @@ import pdfplumber
 import re
 import logging
 from typing import Optional, List, Any
+from pydantic import BaseModel, Extra
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
