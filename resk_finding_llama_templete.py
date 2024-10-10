@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 import faiss
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.vectorstores import FAISS as LangchainFAISS
 from langchain.embeddings import HuggingFaceEmbeddings
@@ -17,6 +16,7 @@ import re
 import logging
 from typing import Optional, List, Any
 from pydantic import BaseModel, Extra, Field
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline, AutoModelForCausalLM
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -332,9 +332,15 @@ def load_llm():
 
 def create_reranker():
     try:
-        reranker_model_id = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-        
-        reranker_pipeline = pipeline("text-classification", model=reranker_model_id, device="cuda")
+        # Replace with the safe-tensors version of the model
+        reranker_model_id = "cross-encoder/stsb-roberta-large"
+
+        # Load the tokenizer and model using safe-tensors format
+        tokenizer = AutoTokenizer.from_pretrained(reranker_model_id)
+        model = AutoModelForSequenceClassification.from_pretrained(reranker_model_id, trust_remote_code=True, use_safetensors=True)
+
+        # Initialize the pipeline with the loaded model and tokenizer
+        reranker_pipeline = pipeline("text-classification", model=model, tokenizer=tokenizer, device="cuda")
         return reranker_pipeline
     except Exception as e:
         logging.error(f"Error creating reranker: {e}")
