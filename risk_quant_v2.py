@@ -32,7 +32,7 @@ def encode_themes(merged_df):
     themes = merged_df['Themes'].values.reshape(-1, 1)
 
     # One-hot encode the themes
-    encoder = OneHotEncoder(sparse=False)
+    encoder = OneHotEncoder(sparse_output=False)
     theme_encoded = encoder.fit_transform(themes)
 
     theme_labels = encoder.categories_[0]
