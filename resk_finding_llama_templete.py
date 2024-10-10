@@ -291,7 +291,6 @@ class CustomLLM(LLM):
         self.chat_history.append((prompt, assistant_reply))
         return assistant_reply
 
-
 def load_llm():
     model_id = "meta-llama/Meta-Llama-3.1-8B-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -333,11 +332,11 @@ def load_llm():
 def create_reranker():
     try:
         # Replace with the safe-tensors version of the model
-        reranker_model_id = "cross-encoder/stsb-roberta-large"
+        reranker_model_id = "cross-encoder/ms-marco-MiniLM-L-12-v2"
 
         # Load the tokenizer and model using safe-tensors format
-        tokenizer = AutoTokenizer.from_pretrained(reranker_model_id)
-        model = AutoModelForSequenceClassification.from_pretrained(reranker_model_id, trust_remote_code=True, use_safetensors=True)
+        tokenizer = AutoTokenizer.from_pretrained(reranker_model_id, from_flax=True)
+        model = AutoModelForSequenceClassification.from_pretrained(reranker_model_id, trust_remote_code=True, use_safetensors=True, from_flax=True)
 
         # Initialize the pipeline with the loaded model and tokenizer
         reranker_pipeline = pipeline("text-classification", model=model, tokenizer=tokenizer, device="cuda")
