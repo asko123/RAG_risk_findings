@@ -250,27 +250,12 @@ def create_vectorstore(chunks):
     vectorstore = LangchainFAISS.from_documents(chunks, embeddings)
     return vectorstore
 
-class CustomLLM(LLM):
-    pipeline: Any
-    prompt_format: Any
-    chat_history: List[tuple] = Field(default_factory=list)
-
-    class Config:
-        extra = Extra.allow
-
-    def __init__(self, pipeline, prompt_format, **kwargs):
-        super().__init__(**kwargs)
-        self.pipeline = pipeline
-        self.prompt_format = prompt_format
-
-    def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
-        formatted_prompt = self.prompt_format(prompt, self.chat_history)
-        response = self.pipeline(formatted_prompt, max_length=1024, do_sample=True)[0]['generated_text']
-        assistant_reply = response[len(formatted_prompt):].split('<|eot_id|>')[0].strip()
-        self.chat_history.append((prompt, assistant_reply))
-        return assistant_reply
+from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification
+from langchain.chains import ConversationalRetrievalChain
+from langchain.memory import ConversationBufferWindowMemory
 
 def load_llm():
+    # Load the LLM using the Hugging Face pipeline
     model_id = "meta-llama/Meta-Llama-3.1-8B-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     model = AutoModelForCausalLM.from_pretrained(
@@ -278,36 +263,16 @@ def load_llm():
         torch_dtype=torch.bfloat16,
         device_map="auto"
     )
-    
-    def llama_3_instruct_prompt(prompt, chat_history):
-        system_message = "You are a helpful AI assistant for cybersecurity, specializing in access control and remediation strategies."
-        formatted_prompt = f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{system_message}<|eot_id|>"
-        for turn in chat_history:
-            formatted_prompt += f"<|start_header_id|>user<|end_header_id|>\n\n{turn[0]}<|eot_id|>"
-            formatted_prompt += f"<|start_header_id|>assistant<|end_header_id|>\n\n{turn[1]}<|eot_id|>"
-        formatted_prompt += f"<|start_header_id|>user<|end_header_id|>\n\n{prompt}<|eot_id|>\n<|start_header_id|>assistant<|end_header_id|>\n"
-        return formatted_prompt
-    
-    pipe = pipeline(
-        "text-generation",
-        model=model,
-        tokenizer=tokenizer,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
-        temperature=0.1,
-        max_length=1024,
-        repetition_penalty=1.2,
-        no_repeat_ngram_size=3
-    )
-    llm = CustomLLM(pipeline=pipe, prompt_format=llama_3_instruct_prompt)
-    return llm
+    llm_pipeline = pipeline("text-generation", model=model, tokenizer=tokenizer, device="cuda")
+    return llm_pipeline
 
 def create_reranker():
     try:
         reranker_model_id = "cross-encoder/ms-marco-MiniLM-L-12-v2"
-        tokenizer = AutoTokenizer.from_pretrained(reranker_model_id, from_flax=True)
+        tokenizer = AutoTokenizer.from_pretrained(reranker_model_id)
         model = AutoModelForSequenceClassification.from_pretrained(
-            reranker_model_id, trust_remote_code=True, use_safetensors=True, from_flax=True)
+            reranker_model_id, trust_remote_code=True, use_safetensors=True
+        )
         reranker_pipeline = pipeline("text-classification", model=model, tokenizer=tokenizer, device="cuda")
         logging.info("Reranker created successfully.")
         return reranker_pipeline
@@ -324,16 +289,23 @@ def rerank_documents(question, docs, reranker):
 
 def get_conversation_chain(vectorstore, llm, reranker):
     memory = ConversationBufferWindowMemory(k=1, memory_key="chat_history", return_messages=True)
-    retriever = vectorstore.as_retriever()
+
+    # Custom retriever function that reranks results
+    def retriever_with_reranking(question):
+        retrieved_docs = vectorstore.similarity_search(question)
+        reranked_docs = rerank_documents(question, retrieved_docs, reranker)
+        return reranked_docs
+
+    # Conversational chain that uses reranked retriever
     conversation_chain = ConversationalRetrievalChain.from_llm(
         llm=llm,
-        retriever=retriever,
+        retriever=retriever_with_reranking,  # Custom retriever
         memory=memory,
         verbose=False
     )
     return conversation_chain
 
-def handle_userinput(user_question, conversation, reranker):
+def handle_userinput(user_question, conversation):
     response = conversation({'question': user_question})
     latest_response = response['answer'].strip()
     print("\n--- Answer ---")
@@ -344,7 +316,7 @@ def main():
     try:
         logging.info("Executing RAG system for Access Control and Remediation Analysis...")
 
-        # Load data, create vector store, LLM, and reranker
+        # Create vector store, LLM, and reranker
         text_data = [ACCESS_CONTROL_PRINCIPLES, OWASP_TOP_10_2021, NIST_ACCESS_CONTROL, ACCESS_CONTROL_REMEDIATION, AC3_ACCESS_ENFORCEMENT]
         chunks = split_text(text_data)
         vectorstore = create_vectorstore(chunks)
@@ -356,10 +328,10 @@ def main():
         print("Access Control and Remediation RAG System Ready. Type 'exit' to quit.")
 
         while True:
-            user_question = input("Ask a question about access control and remediation in cybersecurity (or type 'exit' to quit): ")
+            user_question = input("Ask a question (or type 'exit' to quit): ")
             if user_question.strip().lower() == 'exit':
                 break
-            handle_userinput(user_question, conversation, reranker)
+            handle_userinput(user_question, conversation)
 
     except Exception as e:
         logging.error(f"An error occurred in the main function: {str(e)}")
