@@ -16,7 +16,7 @@ import pdfplumber
 import re
 import logging
 from typing import Optional, List, Any
-from pydantic import BaseModel, Extra
+from pydantic import BaseModel, Extra, Field
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -251,10 +251,12 @@ def create_vectorstore(chunks):
     return vectorstore
 
 # Custom LLM class to handle prompt formatting
+from pydantic import Field
+
 class CustomLLM(LLM):
     pipeline: Any
     prompt_format: Any
-    chat_history: List[tuple]
+    chat_history: List[tuple] = Field(default_factory=list)  # Initialize chat_history with an empty list
 
     class Config:
         extra = Extra.allow  # Allow extra fields not defined in the model
@@ -263,7 +265,6 @@ class CustomLLM(LLM):
         super().__init__(**kwargs)  # Pass any additional arguments to the BaseModel constructor
         self.pipeline = pipeline
         self.prompt_format = prompt_format
-        self.chat_history = []
 
     @property
     def _llm_type(self) -> str:
