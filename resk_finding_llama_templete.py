@@ -15,7 +15,7 @@ from docx import Document
 import pdfplumber
 import re
 import logging
-from typing import Optional, List
+from typing import Optional, List, Any
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -288,6 +288,7 @@ class CustomLLM(LLM):
         # Update chat history
         self.chat_history.append((prompt, assistant_reply))
         return assistant_reply
+
 
 def load_llm():
     model_id = "meta-llama/Meta-Llama-3.1-8B-Instruct"
