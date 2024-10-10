@@ -1,5 +1,5 @@
 import numpy as np
-import pandas as pd  # Added for data handling
+import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.stats import gaussian_kde
 
@@ -19,6 +19,10 @@ def collect_and_prepare_data():
     # Drop any rows with missing values (if any)
     merged_df.dropna(inplace=True)
 
+    # Print the merged dataframe
+    print("\nMerged Dataframe:")
+    print(merged_df)
+
     # Extract impact and likelihood values
     impact = merged_df['Impact'].values
     likelihood = merged_df['Likelihood'].values
@@ -33,6 +37,14 @@ def collect_and_prepare_data():
 
     # Combine into a data array
     data = np.column_stack((impact_samples, likelihood_samples))
+
+    # Create a dataframe from the sampled data
+    sampled_df = pd.DataFrame(data, columns=['Impact', 'Likelihood'])
+
+    # Print the sampled dataframe
+    print("\nSampled Dataframe (First 20 Rows):")
+    print(sampled_df.head(20))
+
     return data
 
 # Monte Carlo Simulation
@@ -44,15 +56,28 @@ def monte_carlo_simulation(data, num_simulations=10000):
     # Ensure generated values are non-negative
     scenarios = np.clip(scenarios, 0, None)
 
+    # Calculate risk scores
     risk_scores = np.array([
         calculate_risk_score(impact, likelihood)
         for impact, likelihood in scenarios
     ])
+
+    # Create a dataframe for the risk scores
+    risk_scores_df = pd.DataFrame({
+        'Impact': scenarios[:, 0],
+        'Likelihood': scenarios[:, 1],
+        'Risk Score': risk_scores
+    })
+
+    # Print the risk scores dataframe
+    print("\nRisk Scores Dataframe (First 5 Rows):")
+    print(risk_scores_df.head())
+
     return risk_scores
 
 # Risk Scoring Framework
 def calculate_risk_score(impact, likelihood):
-    return ((impact * likelihood)/36)
+    return impact * likelihood  # Adjusted to match the scale of your data
 
 # Visualization
 def visualize_risk_distribution(risk_scores):
@@ -77,7 +102,7 @@ def main():
     visualize_risk_distribution(risk_scores)
 
     # Basic statistics
-    print(f"Mean Risk Score: {np.mean(risk_scores):.2f}")
+    print(f"\nMean Risk Score: {np.mean(risk_scores):.2f}")
     print(f"Median Risk Score: {np.median(risk_scores):.2f}")
     print(f"95th Percentile Risk Score: {np.percentile(risk_scores, 95):.2f}")
 
