@@ -1,142 +1,246 @@
 import numpy as np
 import pandas as pd
+import tensorflow as tf
+from tensorflow.keras import layers, models, optimizers
+from sklearn.preprocessing import OneHotEncoder
 import matplotlib.pyplot as plt
-from scipy.stats import gaussian_kde
 
-# Data Collection and Preparation
-def collect_and_prepare_data():
-    # Read the CSV files
+# Load and Merge Data
+def load_and_merge_data():
+    # Load data
     impact_df = pd.read_csv('impact.csv', sep='\t')
     likelihood_df = pd.read_csv('likelihood.csv', sep='\t')
 
-    # Merge the dataframes on the 'Themes' column
+    # Merge on 'Themes'
     merged_df = pd.merge(
         impact_df[['Themes', 'Impact']],
         likelihood_df[['Themes', 'Likelihood']],
         on='Themes'
     )
 
-    # Drop any rows with missing values (if any)
+    # Drop missing values
     merged_df.dropna(inplace=True)
 
-    # Print the merged dataframe
+    # Print merged dataframe
     print("\nMerged Dataframe:")
-    print(merged_df)
-
-    # Extract impact and likelihood values
-    impact = merged_df['Impact'].values
-    likelihood = merged_df['Likelihood'].values
-
-    # Use KDE to sample new impact values
-    impact_kde = gaussian_kde(impact)
-    impact_samples = impact_kde.resample(size=1000).flatten()
-
-    # Use KDE to sample new likelihood values
-    likelihood_kde = gaussian_kde(likelihood)
-    likelihood_samples = likelihood_kde.resample(size=1000).flatten()
-
-    # Combine into a data array
-    data = np.column_stack((impact_samples, likelihood_samples))
-
-    # Create a dataframe from the sampled data
-    sampled_df = pd.DataFrame(data, columns=['Impact', 'Likelihood'])
-
-    # Print the sampled dataframe
-    print("\nSampled Dataframe (First 5 Rows):")
-    print(sampled_df.head())
-
-    return data
-
-# Monte Carlo Simulation
-def monte_carlo_simulation(data, num_simulations=10000):
-    # Randomly sample from the data to create scenarios
-    idx = np.random.randint(0, data.shape[0], num_simulations)
-    scenarios = data[idx]
-
-    # Ensure generated values are non-negative
-    scenarios = np.clip(scenarios, 0, None)
-
-    # Create a dataframe for the scenarios
-    risk_scores_df = pd.DataFrame(scenarios, columns=['Impact', 'Likelihood'])
-
-    # Calculate risk scores
-    risk_scores_df['Risk Score'] = risk_scores_df['Impact'] * risk_scores_df['Likelihood']
-
-    # Print the risk scores dataframe
-    print("\nRisk Scores Dataframe (First 5 Rows):")
-    print(risk_scores_df.head())
-
-    return risk_scores_df
-
-# Calculate Risk Scores per Theme
-def calculate_risk_scores_per_theme():
-    # Read and merge the original data
-    impact_df = pd.read_csv('impact.csv', sep='\t')
-    likelihood_df = pd.read_csv('likelihood.csv', sep='\t')
-
-    merged_df = pd.merge(
-        impact_df[['Themes', 'Impact']],
-        likelihood_df[['Themes', 'Likelihood']],
-        on='Themes'
-    )
-
-    # Drop any rows with missing values (if any)
-    merged_df.dropna(inplace=True)
-
-    # Calculate risk scores
-    merged_df['Risk Score'] = merged_df['Impact'] * merged_df['Likelihood']
-
-    # Print the dataframe
-    print("\nRisk Scores per Theme:")
-    print(merged_df)
+    print(merged_df.head())
 
     return merged_df
 
+# Encode Themes
+def encode_themes(merged_df):
+    themes = merged_df['Themes'].values.reshape(-1, 1)
+
+    # One-hot encode the themes
+    encoder = OneHotEncoder(sparse=False)
+    theme_encoded = encoder.fit_transform(themes)
+
+    theme_labels = encoder.categories_[0]
+
+    # Print theme encoding
+    print("\nTheme Encoding:")
+    for idx, theme in enumerate(theme_labels):
+        print(f"{idx}: {theme}")
+
+    return theme_encoded, encoder
+
+# Build Generator
+def build_generator(theme_dim, noise_dim=10):
+    noise_input = layers.Input(shape=(noise_dim,))
+    theme_input = layers.Input(shape=(theme_dim,))
+
+    x = layers.Concatenate()([noise_input, theme_input])
+
+    x = layers.Dense(64, activation='relu')(x)
+    x = layers.Dense(128, activation='relu')(x)
+    x = layers.Dense(2, activation='linear')(x)  # Output Impact and Likelihood
+
+    model = models.Model([noise_input, theme_input], x)
+    return model
+
+# Build Discriminator
+def build_discriminator(theme_dim):
+    data_input = layers.Input(shape=(2,))
+    theme_input = layers.Input(shape=(theme_dim,))
+
+    x = layers.Concatenate()([data_input, theme_input])
+
+    x = layers.Dense(128, activation='relu')(x)
+    x = layers.Dense(64, activation='relu')(x)
+    x = layers.Dense(1, activation='sigmoid')(x)  # Output single probability
+
+    model = models.Model([data_input, theme_input], x)
+    return model
+
+# Train Conditional GAN
+def train_conditional_gan(merged_df, theme_encoded, encoder, epochs=5000, batch_size=32):
+    theme_dim = theme_encoded.shape[1]
+    noise_dim = 10
+
+    # Build and compile discriminator
+    discriminator = build_discriminator(theme_dim)
+    discriminator.compile(loss='binary_crossentropy', optimizer=optimizers.Adam(0.0002), metrics=['accuracy'])
+
+    # Build generator
+    generator = build_generator(theme_dim, noise_dim=noise_dim)
+
+    # Combined GAN model
+    discriminator.trainable = False
+    noise_input = layers.Input(shape=(noise_dim,))
+    theme_input = layers.Input(shape=(theme_dim,))
+    generated_data = generator([noise_input, theme_input])
+    validity = discriminator([generated_data, theme_input])
+    combined_model = models.Model([noise_input, theme_input], validity)
+    combined_model.compile(loss='binary_crossentropy', optimizer=optimizers.Adam(0.0002))
+
+    # Training Loop
+    real_data = merged_df[['Impact', 'Likelihood']].values
+    num_samples = real_data.shape[0]
+
+    for epoch in range(epochs):
+        # ---------------------
+        #  Train Discriminator
+        # ---------------------
+
+        # Select a random batch of real data
+        idx = np.random.randint(0, num_samples, batch_size)
+        real_samples = real_data[idx]
+        real_themes = theme_encoded[idx]
+
+        # Generate a batch of fake data
+        noise = np.random.normal(0, 1, (batch_size, noise_dim))
+        generated_samples = generator.predict([noise, real_themes])
+
+        # Labels for real and fake data
+        real_labels = np.ones((batch_size, 1))
+        fake_labels = np.zeros((batch_size, 1))
+
+        # Train the discriminator
+        d_loss_real = discriminator.train_on_batch([real_samples, real_themes], real_labels)
+        d_loss_fake = discriminator.train_on_batch([generated_samples, real_themes], fake_labels)
+        d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
+
+        # ---------------------
+        #  Train Generator
+        # ---------------------
+
+        # Generate new noise
+        noise = np.random.normal(0, 1, (batch_size, noise_dim))
+
+        # Random theme conditions
+        sampled_theme_indices = np.random.randint(0, theme_dim, batch_size)
+        sampled_themes = np.zeros((batch_size, theme_dim))
+        sampled_themes[np.arange(batch_size), sampled_theme_indices] = 1
+
+        # Train the generator (to have the discriminator label the generated samples as real)
+        g_loss = combined_model.train_on_batch([noise, sampled_themes], real_labels)
+
+        # Print the progress
+        if epoch % 500 == 0 or epoch == epochs - 1:
+            print(f"Epoch {epoch}/{epochs} | D loss: {d_loss[0]:.4f}, acc: {100 * d_loss[1]:.2f}% | G loss: {g_loss:.4f}")
+
+    return generator
+
+# Generate Synthetic Data
+def generate_synthetic_data(generator, encoder, num_samples):
+    themes = encoder.categories_[0]
+    theme_encoded = encoder.transform(themes.reshape(-1, 1))
+    noise_dim = 10
+
+    synthetic_data = []
+
+    for theme_idx, theme in enumerate(themes):
+        # Generate noise
+        noise = np.random.normal(0, 1, (num_samples, noise_dim))
+
+        # Repeat the theme encoding
+        theme_condition = theme_encoded[theme_idx].reshape(1, -1)
+        theme_conditions = np.repeat(theme_condition, num_samples, axis=0)
+
+        # Generate synthetic data
+        generated_samples = generator.predict([noise, theme_conditions])
+
+        # Create DataFrame
+        theme_df = pd.DataFrame(generated_samples, columns=['Impact', 'Likelihood'])
+        theme_df['Themes'] = theme
+
+        synthetic_data.append(theme_df)
+
+    synthetic_df = pd.concat(synthetic_data, ignore_index=True)
+
+    # Ensure non-negative values
+    synthetic_df['Impact'] = synthetic_df['Impact'].clip(lower=0)
+    synthetic_df['Likelihood'] = synthetic_df['Likelihood'].clip(lower=0)
+
+    # Print synthetic dataframe
+    print("\nSynthetic Dataframe (First 5 Rows):")
+    print(synthetic_df[['Themes', 'Impact', 'Likelihood']].head())
+
+    return synthetic_df
+
+# Calculate and Rank Risk Scores
+def calculate_and_rank_risks(synthetic_df):
+    # Calculate risk scores
+    synthetic_df['Risk Score'] = synthetic_df['Impact'] * synthetic_df['Likelihood']
+
+    # Aggregate risk scores per Theme
+    theme_risk_scores = synthetic_df.groupby('Themes')['Risk Score'].mean().reset_index()
+
+    # Rank Themes based on risk score
+    theme_risk_scores['Rank'] = theme_risk_scores['Risk Score'].rank(ascending=False)
+
+    # Sort Themes by rank
+    ranked_themes = theme_risk_scores.sort_values('Rank')
+
+    # Print ranked Themes
+    print("\nRanked Themes based on Average Risk Score:")
+    print(ranked_themes)
+
+    return ranked_themes
+
 # Visualization
-def visualize_risk_distribution(risk_scores_df):
-    # Extract the 'Risk Score' column
-    risk_scores = risk_scores_df['Risk Score']
-
-    kde = gaussian_kde(risk_scores)
-    x_range = np.linspace(risk_scores.min(), risk_scores.max(), 100)
+def visualize_risk_scores(synthetic_df):
+    # Histogram of Risk Scores
     plt.figure(figsize=(10, 6))
-    plt.plot(x_range, kde(x_range))
-    plt.title('Risk Score Distribution (Synthetic Data)')
-    plt.xlabel('Risk Score')
-    plt.ylabel('Density')
-    plt.show()
-
-    # Print the risk scores dataframe (First 5 Rows)
-    print("\nRisk Scores Dataframe (First 5 Rows):")
-    print(risk_scores_df.head())
-
-# Main execution
-def main():
-    # Calculate risk scores per theme using original data
-    theme_risk_scores_df = calculate_risk_scores_per_theme()
-
-    # Visualize risk scores per theme
-    plt.figure(figsize=(10, 6))
-    plt.hist(theme_risk_scores_df['Risk Score'], bins=10, edgecolor='k', alpha=0.7)
-    plt.title('Risk Score Distribution per Theme')
+    plt.hist(synthetic_df['Risk Score'], bins=30, edgecolor='k', alpha=0.7)
+    plt.title('Risk Score Distribution (Synthetic Data with Themes)')
     plt.xlabel('Risk Score')
     plt.ylabel('Frequency')
     plt.show()
 
-    # Data preparation with KDE sampling
-    data = collect_and_prepare_data()
+    # Boxplot per Theme
+    plt.figure(figsize=(12, 6))
+    synthetic_df.boxplot(column='Risk Score', by='Themes', rot=90)
+    plt.title('Risk Score Distribution per Theme')
+    plt.xlabel('Themes')
+    plt.ylabel('Risk Score')
+    plt.tight_layout()
+    plt.show()
 
-    # Monte Carlo simulation
-    risk_scores_df = monte_carlo_simulation(data)
+# Main Execution Function
+def main():
+    # Load and merge data
+    merged_df = load_and_merge_data()
 
-    # Visualization
-    visualize_risk_distribution(risk_scores_df)
+    # Encode Themes
+    theme_encoded, encoder = encode_themes(merged_df)
 
-    # Basic statistics
-    risk_scores = risk_scores_df['Risk Score']
-    print(f"\nMean Risk Score (Synthetic Data): {risk_scores.mean():.2f}")
-    print(f"Median Risk Score (Synthetic Data): {risk_scores.median():.2f}")
-    print(f"95th Percentile Risk Score (Synthetic Data): {risk_scores.quantile(0.95):.2f}")
+    # Train Conditional GAN
+    generator = train_conditional_gan(merged_df, theme_encoded, encoder, epochs=5000, batch_size=32)
+
+    # Generate Synthetic Data
+    synthetic_df = generate_synthetic_data(generator, encoder, num_samples=100)
+
+    # Calculate and Rank Risk Scores
+    ranked_themes = calculate_and_rank_risks(synthetic_df)
+
+    # Visualize Risk Scores
+    visualize_risk_scores(synthetic_df)
+
+    # Print Basic Statistics
+    print(f"\nMean Risk Score (Synthetic Data): {synthetic_df['Risk Score'].mean():.2f}")
+    print(f"Median Risk Score (Synthetic Data): {synthetic_df['Risk Score'].median():.2f}")
+    print(f"95th Percentile Risk Score (Synthetic Data): {synthetic_df['Risk Score'].quantile(0.95):.2f}")
 
 if __name__ == "__main__":
     main()
