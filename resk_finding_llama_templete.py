@@ -356,12 +356,12 @@ def rerank_documents(question, docs, reranker):
 class RerankRetriever(VectorStoreRetriever):
     def __init__(self, vectorstore, reranker):
         super().__init__(vectorstore=vectorstore)
-        self.reranker = reranker
+        self.reranker = reranker  # Ensure the reranker is saved as a class attribute
 
     def get_relevant_documents(self, query):
         docs = super().get_relevant_documents(query)
-        reranked_docs = rerank_documents(query, docs, self.reranker)
-        return reranked_docs[:5]
+        reranked_docs = rerank_documents(query, docs, self.reranker)  # Call the rerank function
+        return reranked_docs[:5]  # Return top 5 reranked documents
 
     async def aget_relevant_documents(self, query):
         return self.get_relevant_documents(query)
