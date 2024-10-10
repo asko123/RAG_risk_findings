@@ -250,51 +250,29 @@ def create_vectorstore(chunks):
     vectorstore = LangchainFAISS.from_documents(chunks, embeddings)
     return vectorstore
 
-# Custom LLM class to handle prompt formatting
-from pydantic import Field
-
 class CustomLLM(LLM):
     pipeline: Any
     prompt_format: Any
-    chat_history: List[tuple] = Field(default_factory=list)  # Initialize chat_history with an empty list
+    chat_history: List[tuple] = Field(default_factory=list)
 
     class Config:
-        extra = Extra.allow  # Allow extra fields not defined in the model
+        extra = Extra.allow
 
     def __init__(self, pipeline, prompt_format, **kwargs):
-        super().__init__(**kwargs)  # Pass any additional arguments to the BaseModel constructor
+        super().__init__(**kwargs)
         self.pipeline = pipeline
         self.prompt_format = prompt_format
 
-    @property
-    def _llm_type(self) -> str:
-        return "custom_huggingface"
-
     def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
-        # Format the prompt using the custom prompt function
         formatted_prompt = self.prompt_format(prompt, self.chat_history)
-        
-        # Debugging: print or log the formatted prompt
-        logging.debug(f"Formatted Prompt:\n{formatted_prompt}")
-        
-        # Generate the response
         response = self.pipeline(formatted_prompt, max_length=1024, do_sample=True)[0]['generated_text']
-        
-        # Debugging: print or log the raw model output
-        logging.debug(f"Raw Model Output:\n{response}")
-        
-        # Extract the assistant's reply from the response
-        generated_content = response[len(formatted_prompt):]
-        assistant_reply = generated_content.split('<|eot_id|>')[0].strip()
-        
-        # Update chat history
+        assistant_reply = response[len(formatted_prompt):].split('<|eot_id|>')[0].strip()
         self.chat_history.append((prompt, assistant_reply))
         return assistant_reply
 
 def load_llm():
     model_id = "meta-llama/Meta-Llama-3.1-8B-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_id)
-    
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         torch_dtype=torch.bfloat16,
@@ -304,13 +282,10 @@ def load_llm():
     def llama_3_instruct_prompt(prompt, chat_history):
         system_message = "You are a helpful AI assistant for cybersecurity, specializing in access control and remediation strategies."
         formatted_prompt = f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{system_message}<|eot_id|>"
-        
         for turn in chat_history:
             formatted_prompt += f"<|start_header_id|>user<|end_header_id|>\n\n{turn[0]}<|eot_id|>"
             formatted_prompt += f"<|start_header_id|>assistant<|end_header_id|>\n\n{turn[1]}<|eot_id|>"
-        
-        formatted_prompt += f"<|start_header_id|>user<|end_header_id|>\n\n{prompt}<|eot_id|>"
-        formatted_prompt += f"<|start_header_id|>assistant<|end_header_id|>\n"
+        formatted_prompt += f"<|start_header_id|>user<|end_header_id|>\n\n{prompt}<|eot_id|>\n<|start_header_id|>assistant<|end_header_id|>\n"
         return formatted_prompt
     
     pipe = pipeline(
@@ -324,22 +299,17 @@ def load_llm():
         repetition_penalty=1.2,
         no_repeat_ngram_size=3
     )
-    
     llm = CustomLLM(pipeline=pipe, prompt_format=llama_3_instruct_prompt)
-    
     return llm
 
 def create_reranker():
     try:
-        # Replace with the safe-tensors version of the model
         reranker_model_id = "cross-encoder/ms-marco-MiniLM-L-12-v2"
-
-        # Load the tokenizer and model using safe-tensors format
         tokenizer = AutoTokenizer.from_pretrained(reranker_model_id, from_flax=True)
-        model = AutoModelForSequenceClassification.from_pretrained(reranker_model_id, trust_remote_code=True, use_safetensors=True, from_flax=True)
-
-        # Initialize the pipeline with the loaded model and tokenizer
+        model = AutoModelForSequenceClassification.from_pretrained(
+            reranker_model_id, trust_remote_code=True, use_safetensors=True, from_flax=True)
         reranker_pipeline = pipeline("text-classification", model=model, tokenizer=tokenizer, device="cuda")
+        logging.info("Reranker created successfully.")
         return reranker_pipeline
     except Exception as e:
         logging.error(f"Error creating reranker: {e}")
@@ -350,98 +320,37 @@ def rerank_documents(question, docs, reranker):
     scores = reranker(inputs, truncation=True)
     for doc, score in zip(docs, scores):
         doc.metadata["score"] = score["score"]
-    reranked_docs = sorted(docs, key=lambda x: x.metadata["score"], reverse=True)
-    return reranked_docs
-
-class RerankRetriever(VectorStoreRetriever):
-    def __init__(self, vectorstore, reranker):
-        super().__init__(vectorstore=vectorstore)
-        self.reranker = reranker  # Ensure the reranker is saved as a class attribute
-
-    def get_relevant_documents(self, query):
-        docs = super().get_relevant_documents(query)
-        reranked_docs = rerank_documents(query, docs, self.reranker)  # Call the rerank function
-        return reranked_docs[:5]  # Return top 5 reranked documents
-
-    async def aget_relevant_documents(self, query):
-        return self.get_relevant_documents(query)
+    return sorted(docs, key=lambda x: x.metadata["score"], reverse=True)
 
 def get_conversation_chain(vectorstore, llm, reranker):
-    memory = ConversationBufferWindowMemory(
-        k=1, memory_key="chat_history", return_messages=True
-    )
-    retriever = RerankRetriever(vectorstore=vectorstore, reranker=reranker)
+    memory = ConversationBufferWindowMemory(k=1, memory_key="chat_history", return_messages=True)
+    retriever = vectorstore.as_retriever()
     conversation_chain = ConversationalRetrievalChain.from_llm(
         llm=llm,
         retriever=retriever,
         memory=memory,
-        get_chat_history=lambda x: "",  # Chat history is managed by the custom LLM
-        verbose=False,
+        verbose=False
     )
     return conversation_chain
 
-def handle_userinput(user_question, conversation):
+def handle_userinput(user_question, conversation, reranker):
     response = conversation({'question': user_question})
     latest_response = response['answer'].strip()
-    
     print("\n--- Answer ---")
     print(latest_response)
-    
     return latest_response
-
-def analyze_access_control_coverage(vectorstore):
-    all_access_control_info = []
-    ac3_related_info = []
-    for doc in vectorstore.docstore._dict.values():
-        info = doc.metadata.get('access_control_info', [])
-        all_access_control_info.extend(info)
-        ac3_related_info.extend([item for item in info if 'AC-3' in item or 'Access Enforcement' in item])
-    
-    access_control_counts = pd.Series(all_access_control_info).value_counts()
-    ac3_counts = pd.Series(ac3_related_info).value_counts()
-
-    print("Access Control and Remediation Coverage Analysis:")
-    print(access_control_counts)
-    print("\nTotal unique access control measures and remediation strategies:", len(access_control_counts))
-    print("Top 10 most mentioned access control measures and remediation strategies:")
-    print(access_control_counts.head(10))
-    
-    print("\nAC-3 Access Enforcement Specific Analysis:")
-    print(ac3_counts)
-    print("\nTotal unique AC-3 related measures:", len(ac3_counts))
-    print("Top 5 most mentioned AC-3 related measures:")
-    print(ac3_counts.head(5))
 
 def main():
     try:
         logging.info("Executing RAG system for Access Control and Remediation Analysis...")
-        
-        # Add static data
+
+        # Load data, create vector store, LLM, and reranker
         text_data = [ACCESS_CONTROL_PRINCIPLES, OWASP_TOP_10_2021, NIST_ACCESS_CONTROL, ACCESS_CONTROL_REMEDIATION, AC3_ACCESS_ENFORCEMENT]
-        
-        # Directory containing data files
-        data_dir = 'data'
-        # Supported file extensions
-        supported_extensions = ['.csv', '.txt', '.pdf', '.docx']
-        # Get list of all files in data_dir with supported extensions
-        file_paths = []
-        for root, dirs, files in os.walk(data_dir):
-            for file in files:
-                if os.path.splitext(file)[1].lower() in supported_extensions:
-                    file_paths.append(os.path.join(root, file))
-        
-        # Load data from all files
-        text_data.extend(load_files(file_paths))
-        
-        # Split and process text
         chunks = split_text(text_data)
         vectorstore = create_vectorstore(chunks)
         llm = load_llm()
         reranker = create_reranker()
         conversation = get_conversation_chain(vectorstore, llm, reranker)
-
-        # Analyze access control and remediation coverage
-        analyze_access_control_coverage(vectorstore)
 
         logging.info("Access Control and Remediation RAG System Ready.")
         print("Access Control and Remediation RAG System Ready. Type 'exit' to quit.")
@@ -450,7 +359,7 @@ def main():
             user_question = input("Ask a question about access control and remediation in cybersecurity (or type 'exit' to quit): ")
             if user_question.strip().lower() == 'exit':
                 break
-            handle_userinput(user_question, conversation)
+            handle_userinput(user_question, conversation, reranker)
 
     except Exception as e:
         logging.error(f"An error occurred in the main function: {str(e)}")
