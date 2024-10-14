@@ -12,8 +12,8 @@ def load_and_merge_data():
     likelihood_filepath = "likelihood.csv"
     impact_filepath = "impact.csv"
     
-    df_likelihood = pd.read_csv(likelihood_filepath)
-    df_impact = pd.read_csv(impact_filepath)
+    df_likelihood = pd.read_csv(likelihood_filepath, sep='\t')
+    df_impact = pd.read_csv(impact_filepath, sep='\t')
     
     # Data Cleaning
     df_likelihood = df_likelihood.fillna(0)  # Replace NaNs with 0, if any
@@ -125,7 +125,7 @@ def train_conditional_gan(df_combined, theme_encoded, encoder, epochs=5000, batc
         if epoch % 500 == 0 or epoch == epochs - 1:
             print(
                 f"Epoch {epoch}/{epochs} | D loss: {d_loss_avg:.4f}, "
-                f"acc: {100 * d_acc_avg:.2f}% | G loss: {g_loss:.4f}"
+                f"acc: {d_acc_avg * 100:.2f}% | G loss: {g_loss:.4f}"
             )
 
     return generator
