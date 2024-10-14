@@ -58,7 +58,7 @@ def read_document(file_path):
     
     return ' '.join(text_data)
 
-# Prompt template as a cybersecurity expert
+# Prompt template for addressing specific findings
 def cyber_security_prompt(finding, document_content):
     system_message = "You are a helpful AI assistant for cybersecurity, specializing in standards, policies, and remediation strategies."
     prompt_template = (
@@ -87,26 +87,39 @@ def rag_demo(data_folder):
         document_store.append(document_content)
         embeddings_store.append(embedding)
     
-    # Example query to demonstrate retrieval
-    query = "Analyze the document for cybersecurity vulnerabilities."
-    query_embedding = embedding_model.encode(query)
-    
-    # Retrieve the nearest documents
-    _, nearest_indices = index.search(np.array([query_embedding]), k=5)
-    nearest_documents = [document_store[i] for i in nearest_indices[0]]
-    nearest_embeddings = [embeddings_store[i] for i in nearest_indices[0]]
-    
-    # Rerank the retrieved documents using cosine similarity
-    similarities = cosine_similarity([query_embedding], nearest_embeddings)[0]
-    reranked_indices = np.argsort(similarities)[::-1]
-    best_document_content = nearest_documents[reranked_indices[0]]
-    
-    # Create the prompt and generate the response
-    prompt = cyber_security_prompt(best_document_content)
-    response = generator(prompt, max_length=500, num_return_sequences=1)[0]['generated_text']
-    
-    # Print the generated response
-    print(f"Response for the retrieved document:\n{response}\n")
+    # Loop to allow users to ask multiple related findings questions
+    while True:
+        finding = input("Enter the finding (or type 'exit' to quit): ")
+        if finding.lower() == 'exit':
+            break
+        
+        # Generate embedding for the query
+        query_embedding = embedding_model.encode(finding)
+        
+        # Retrieve the nearest documents
+        # Search the FAISS index to find the top k=5 nearest document embeddings to the query
+        _, nearest_indices = index.search(np.array([query_embedding]), k=5)
+        
+        # Extract the content and embeddings of the nearest documents
+        nearest_documents = [document_store[i] for i in nearest_indices[0]]
+        nearest_embeddings = [embeddings_store[i] for i in nearest_indices[0]]
+        
+        # Rerank the retrieved documents using cosine similarity
+        # Calculate the cosine similarity between the query embedding and each of the retrieved document embeddings
+        similarities = cosine_similarity([query_embedding], nearest_embeddings)[0]
+        
+        # Sort the documents by similarity in descending order to get the most relevant document first
+        reranked_indices = np.argsort(similarities)[::-1]
+        
+        # Select the best document based on the highest similarity score
+        best_document_content = nearest_documents[reranked_indices[0]]
+        
+        # Create the prompt and generate the response
+        prompt = cyber_security_prompt(finding, best_document_content)
+        response = generator(prompt, max_length=500, num_return_sequences=1)[0]['generated_text']
+        
+        # Print the generated response
+        print(f"Response for the finding:\n{response}\n")
 
 # Example usage
 if __name__ == "__main__":
