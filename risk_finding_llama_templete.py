@@ -60,11 +60,12 @@ def read_document(file_path):
 
 # Prompt template as a cybersecurity expert
 def cyber_security_prompt(document_content):
+    system_message = "You are a helpful AI assistant for cybersecurity, specializing in standards, policies, and remediation strategies."
     prompt_template = (
         "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n"
-        "You are a cybersecurity expert. Analyze the following document and provide insights on potential security risks, vulnerabilities, "
-        "or best practices that should be implemented. Your response should be concise, professional, and relevant to the provided content.<|eot_id|>\n"
+        f"{system_message}<|eot_id|>\n"
         "<|start_header_id|>user<|end_header_id|>\n"
+        "You are a cybersecurity expert. Analyze the following data and provide insights on potential risks, recommendations for security standards, and steps to remediate issues. Your response should be tailored to developers or security professionals seeking to implement best practices.\n"
         "Document Content:\n" + document_content + "<|eot_id|>\n"
         "<|start_header_id|>assistant<|end_header_id|>"
     )
