@@ -129,11 +129,17 @@ def train_conditional_gan(df_combined, theme_encoded, encoder, epochs=5000, batc
 
         g_loss = combined_model.train_on_batch([noise, sampled_themes], np.ones((batch_size, 1)))
 
+        # Assuming d_loss_avg, d_acc_avg, and g_loss could be lists, use last value for print
+        d_loss_avg_value = d_loss_avg[-1] if isinstance(d_loss_avg, list) else d_loss_avg
+        d_acc_avg_value = d_acc_avg[-1] if isinstance(d_acc_avg, list) else d_acc_avg
+        g_loss_value = g_loss[-1] if isinstance(g_loss, list) else g_loss
+
+
         if epoch % 500 == 0 or epoch == epochs - 1:
-            print(
-                f"Epoch {epoch}/{epochs} | D loss: {d_loss_avg:.4f}, "
-                f"acc: {d_acc_avg * 100:.2f}% | G loss: {g_loss:.4f}"
-            )
+          print(
+              f"Epoch {epoch}/{epochs} | D loss: {d_loss_avg_value:.4f}, "
+              f"acc: {d_acc_avg_value * 100:.2f}% | G loss: {g_loss_value:.4f}"
+              )
 
     return generator
 
