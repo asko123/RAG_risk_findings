@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, models, optimizers
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import MinMaxScaler
 from sklearn.feature_extraction.text import TfidfVectorizer
 
 # Function to load and merge data
@@ -43,8 +43,10 @@ def build_generator(theme_dim, noise_dim=10):
 
     x = layers.Concatenate()([noise_input, theme_input])
 
-    x = layers.Dense(64, activation='relu')(x)
-    x = layers.Dense(128, activation='relu')(x)
+    x = layers.Dense(64, activation='relu', kernel_initializer='he_normal')(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dense(128, activation='relu', kernel_initializer='he_normal')(x)
+    x = layers.BatchNormalization()(x)
     x = layers.Dense(2, activation='linear')(x)  # Output Impact and Likelihood
 
     model = models.Model([noise_input, theme_input], x)
@@ -58,7 +60,9 @@ def build_discriminator(theme_dim):
     x = layers.Concatenate()([data_input, theme_input])
 
     x = layers.Dense(128, activation='relu')(x)
+    x = layers.Dropout(0.3)(x)
     x = layers.Dense(64, activation='relu')(x)
+    x = layers.Dropout(0.3)(x)
     x = layers.Dense(1, activation='sigmoid')(x)  # Output single probability
 
     model = models.Model([data_input, theme_input], x)
@@ -69,11 +73,15 @@ def train_conditional_gan(df_combined, theme_encoded, encoder, epochs=5000, batc
     theme_dim = theme_encoded.shape[1]
     noise_dim = 10
 
+    # Scale real data to [0, 1]
+    scaler = MinMaxScaler()
+    scaled_real_data = scaler.fit_transform(df_combined[['Impact', 'Likelihood']])
+
     # Build and compile discriminator
     discriminator = build_discriminator(theme_dim)
     discriminator.compile(
         loss='binary_crossentropy',
-        optimizer=optimizers.Adam(0.0002),
+        optimizer=optimizers.Adam(learning_rate=0.0001),
         metrics=['accuracy']
     )
 
@@ -89,24 +97,23 @@ def train_conditional_gan(df_combined, theme_encoded, encoder, epochs=5000, batc
     combined_model = models.Model([noise_input, theme_input], validity)
     combined_model.compile(
         loss='binary_crossentropy',
-        optimizer=optimizers.Adam(0.0002)
+        optimizer=optimizers.Adam(learning_rate=0.0001)
     )
 
     # Training Loop
-    real_data = df_combined[['Impact', 'Likelihood']].values
-    num_samples = real_data.shape[0]
+    num_samples = scaled_real_data.shape[0]
 
     for epoch in range(epochs):
         # Train Discriminator
         idx = np.random.randint(0, num_samples, batch_size)
-        real_samples = real_data[idx]
+        real_samples = scaled_real_data[idx]
         real_themes = theme_encoded[idx]
 
         noise = np.random.normal(0, 1, (batch_size, noise_dim))
         generated_samples = generator.predict([noise, real_themes], verbose=0)
 
-        real_labels = np.ones((batch_size, 1))
-        fake_labels = np.zeros((batch_size, 1))
+        real_labels = np.ones((batch_size, 1)) * 0.9  # Smooth real labels
+        fake_labels = np.zeros((batch_size, 1)) + 0.1  # Smooth fake labels
 
         d_loss_real = discriminator.train_on_batch([real_samples, real_themes], real_labels)
         d_loss_fake = discriminator.train_on_batch([generated_samples, real_themes], fake_labels)
