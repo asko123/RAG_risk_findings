@@ -1,0 +1,201 @@
+import os
+import json
+import unittest
+
+import boto3
+from moto import mock_aws
+
+# Assumption: these modules exist with these import paths in your repo
+from common import utils
+from common.aws_operator import AWSOperator
+from scanner import scanner_handler
+
+# Ensure the code under test takes the "lab" branch as in your screenshots
+os.environ["env"] = "lab"
+
+
+def _as_bool(v):
+    """Normalize 'true'/'false'/bool to a Python bool for robust assertions."""
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower() in ("true", "1", "yes")
+
+
+class TestScannerHandlerAWSOperator(unittest.TestCase):
+    """
+    This test spins up moto for S3/SNS/IAM/EC2, provisions:
+      - a compliant bucket: dfs-lab16-config-bucket
+      - a bare bucket: blank_policy
+    Then it dispatches two events into scanner_handler.init_bucket_scan(...)
+    and asserts the normalized 'compliant' flag.
+    """
+
+    def setUp(self):
+        # Start moto once per test method so state is clean & isolated
+        self._moto = mock_aws()
+        self._moto.start()
+
+        self.region = "us-east-1"
+        self.s3 = boto3.client("s3", region_name=self.region)
+        self.sns = boto3.client("sns", region_name=self.region)
+        self.iam = boto3.client("iam", region_name=self.region)
+        self.ec2 = boto3.client("ec2", region_name=self.region)
+
+        # ---------------------------
+        # 1) Buckets
+        # ---------------------------
+        self.s3.create_bucket(Bucket="dfs-lab16-config-bucket")
+        self.s3.create_bucket(Bucket="blank_policy")
+
+        # Tags (FIX: use 'secmon_id' not 'secom_id')
+        self.s3.put_bucket_tagging(
+            Bucket="dfs-lab16-config-bucket",
+            Tagging={
+                "TagSet": [
+                    {"Key": "secmon_id", "Value": "400"},
+                    {"Key": "deployer_role", "Value": "LAB16"},
+                ]
+            },
+        )
+
+        # Versioning ON
+        self.s3.put_bucket_versioning(
+            Bucket="dfs-lab16-config-bucket",
+            VersioningConfiguration={"Status": "Enabled"},
+        )
+
+        # Default encryption ON (AES256) to match your policy checks
+        self.s3.put_bucket_encryption(
+            Bucket="dfs-lab16-config-bucket",
+            ServerSideEncryptionConfiguration={
+                "Rules": [
+                    {
+                        "ApplyServerSideEncryptionByDefault": {
+                            "SSEAlgorithm": "AES256"
+                        }
+                    }
+                ]
+            },
+        )
+
+        # ---------------------------
+        # 2) Create a VPC endpoint and splice its ID into the reference policy
+        #    (moto generates random IDs, so we patch the policy)
+        # ---------------------------
+        vpc_id = self.ec2.create_vpc(CidrBlock="10.0.0.0/16")["Vpc"]["VpcId"]
+        vpce_id = self.ec2.create_vpc_endpoint(
+            VpcId=vpc_id,
+            ServiceName="com.amazonaws.us-east-1.s3",
+            VpcEndpointType="Gateway",
+        )["VpcEndpoint"]["VpcEndpointId"]
+
+        # Assumption: file contains a *list of statements* (not a full policy object).
+        with open(
+            "test/data/bucket_security/generate_ref_policy_Pass1.json", "r"
+        ) as f:
+            statements = json.load(f)
+
+        # Be tolerant to either StringNotEqualsIfExists/StringNotEquals/StringEquals
+        for st in statements:
+            cond = st.get("Condition", {})
+            for key in ("StringNotEqualsIfExists", "StringNotEquals", "StringEquals"):
+                block = cond.get(key)
+                if isinstance(block, dict) and "aws:SourceVpce" in block:
+                    block["aws:SourceVpce"] = [vpce_id]
+                    cond[key] = block
+                    st["Condition"] = cond
+
+        compliant_policy = {"Version": "2012-10-17", "Statement": statements}
+        self.s3.put_bucket_policy(
+            Bucket="dfs-lab16-config-bucket",
+            Policy=json.dumps(compliant_policy),
+        )
+
+        # ---------------------------
+        # 3) SNS topic the operator can publish to
+        # ---------------------------
+        self.topic_arn = self.sns.create_topic(Name="warden-notify")["TopicArn"]
+
+        # ---------------------------
+        # 4) IAM roles the operator lookup logs refer to
+        #    (not strictly required for pass/fail; keeps logs clean)
+        # ---------------------------
+        for role in (
+            "SAML-ASSUMADMIN",
+            "SecurityMonitoringRole",
+            "SAML-ACCT-OWNER",
+            "VAULT-ACCT-OWNER",
+            "POC-TAGATRON-TAG-EXECUTION-SERVICE-LAMBDA-ROLE",
+            "LAB16",
+        ):
+            self.iam.create_role(RoleName=role, AssumeRolePolicyDocument="{}")
+
+        # ---------------------------
+        # 5) Patch AWSOperator.publish_to_sns to always use our moto topic
+        # ---------------------------
+        self._orig_publish = AWSOperator.publish_to_sns
+
+        def _publish_to_sns(_self, message):
+            boto3.client("sns", region_name=self.region).publish(
+                TopicArn=self.topic_arn, Message=json.dumps(message)
+            )
+
+        AWSOperator.publish_to_sns = _publish_to_sns
+
+        # SUT dependency
+        self.operator = AWSOperator()
+
+    def tearDown(self):
+        # Restore patched method and stop moto
+        AWSOperator.publish_to_sns = self._orig_publish
+        self._moto.stop()
+
+    # ---------------------------
+    # Utility to load event JSONs
+    # ---------------------------
+    def _event(self, filename):
+        # Assumption: your utils has load_json(path) as used elsewhere
+        return utils.load_json(f"test/data/scanner_handler/{filename}")
+
+    # ---------------------------
+    # Main runner used by both tests
+    # ---------------------------
+    def _run_and_assert(self, event_file, expected_compliant_bool):
+        event = self._event(event_file)
+        bucket = event["detail"]["bucketName"]
+
+        # For the "withoutPolicy" case, remove the policy on the bucket referenced by the event
+        if event_file == "event_ScanBucket_withoutPolicy.json":
+            try:
+                self.s3.delete_bucket_policy(Bucket=bucket)
+            except Exception:
+                pass
+
+        resp = scanner_handler.init_bucket_scan(event, operator=self.operator)
+
+        # Strong guard: make sure we actually scanned the intended bucket
+        self.assertIn("bucket_name", resp)
+        self.assertEqual(resp["bucket_name"], bucket)
+
+        # FIX: normalize string/boolean before comparing
+        actual = _as_bool(resp.get("compliant", False))
+
+        # When a mismatch happens, include the whole payload for instant diagnosis
+        self.assertEqual(
+            actual, expected_compliant_bool, msg=json.dumps(resp, indent=2)
+        )
+
+    # ---------------------------
+    # Tests
+    # ---------------------------
+    def test_compliant_bucket(self):
+        # Event must point to 'dfs-lab16-config-bucket'
+        self._run_and_assert("event_ScanBucket_compliant.json", True)
+
+    def test_bucket_without_policy(self):
+        # Event must point to 'blank_policy'
+        self._run_and_assert("event_ScanBucket_withoutPolicy.json", False)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
